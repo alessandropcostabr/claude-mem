@@ -59,8 +59,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;  // Max observations to inject per prompt
   // Tier Routing (model selection by queue complexity)
   CLAUDE_MEM_TIER_ROUTING_ENABLED: string;   // 'true' | 'false' - enable model tier routing
-  CLAUDE_MEM_TIER_SIMPLE_MODEL: string;      // Model for simple tool observations (Read, Glob, Grep)
-  CLAUDE_MEM_TIER_SUMMARY_MODEL: string;     // Model for session summaries
+  CLAUDE_MEM_TIER_SIMPLE_MODEL: string;      // Tier alias or model ID for simple tool observations (Read, Glob, Grep)
+  CLAUDE_MEM_TIER_SUMMARY_MODEL: string;     // Tier alias or model ID for session summaries
   // Chroma Vector Database Configuration
   CLAUDE_MEM_CHROMA_ENABLED: string;   // 'true' | 'false' - set to 'false' for SQLite-only mode
   CLAUDE_MEM_CHROMA_MODE: string;      // 'local' | 'remote'
@@ -125,7 +125,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',           // Top-N most relevant observations to inject per prompt
     // Tier Routing (model selection by queue complexity)
     CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',         // Route observations to models by complexity
-    CLAUDE_MEM_TIER_SIMPLE_MODEL: 'claude-haiku-4-5', // Fast/cheap for simple tool observations
+    CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku', // Portable tier alias — works across Direct API, Bedrock, Vertex, Azure (see #1463)
     CLAUDE_MEM_TIER_SUMMARY_MODEL: '',                // Empty = use default model for summaries
     // Chroma Vector Database Configuration
     CLAUDE_MEM_CHROMA_ENABLED: 'true',         // Set to 'false' to disable Chroma and use SQLite-only search
