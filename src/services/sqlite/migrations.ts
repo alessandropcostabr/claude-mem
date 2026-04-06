@@ -525,19 +525,69 @@ export const migration008: Migration = {
       CREATE TABLE IF NOT EXISTS observation_feedback (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         observation_id INTEGER NOT NULL,
-        signal_type TEXT NOT NULL,
-        session_db_id INTEGER,
+        signal TEXT NOT NULL,
+        source TEXT NOT NULL,
+        project TEXT,
         created_at_epoch INTEGER NOT NULL,
-        metadata TEXT,
         FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
       )
     `);
     db.run(`CREATE INDEX IF NOT EXISTS idx_feedback_observation ON observation_feedback(observation_id)`);
-    db.run(`CREATE INDEX IF NOT EXISTS idx_feedback_signal ON observation_feedback(signal_type)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_feedback_signal ON observation_feedback(signal)`);
     console.log('✅ Created observation_feedback table for usage tracking');
   },
   down: (db: Database) => {
     db.run(`DROP TABLE IF EXISTS observation_feedback`);
+  }
+};
+
+/**
+ * Migration 009: Bandit engine tables for multi-armed bandit experiments
+ *
+ * Stores experiment definitions and per-arm Beta distribution parameters
+ * for Thompson Sampling optimization.
+ */
+export const migration009: Migration = {
+  version: 26,
+  up: (db: Database) => {
+    // Ensure observations has required columns for bandit engine
+    const obsColumns = db.prepare('PRAGMA table_info(observations)').all() as any[];
+    const hasRelevanceCount = obsColumns.some((c: any) => c.name === 'relevance_count');
+    const hasGeneratedByModel = obsColumns.some((c: any) => c.name === 'generated_by_model');
+
+    if (!hasRelevanceCount) {
+      db.run('ALTER TABLE observations ADD COLUMN relevance_count INTEGER DEFAULT 0');
+    }
+    if (!hasGeneratedByModel) {
+      db.run('ALTER TABLE observations ADD COLUMN generated_by_model TEXT');
+    }
+
+    db.run(`
+      CREATE TABLE IF NOT EXISTS bandit_experiments (
+        id TEXT PRIMARY KEY,
+        description TEXT NOT NULL,
+        reward_signals TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL
+      )
+    `);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS bandit_arms (
+        experiment_id TEXT NOT NULL,
+        arm_id TEXT NOT NULL,
+        alpha REAL NOT NULL DEFAULT 1.0,
+        beta REAL NOT NULL DEFAULT 1.0,
+        pulls INTEGER NOT NULL DEFAULT 0,
+        total_reward REAL NOT NULL DEFAULT 0.0,
+        updated_at_epoch INTEGER NOT NULL,
+        PRIMARY KEY (experiment_id, arm_id),
+        FOREIGN KEY (experiment_id) REFERENCES bandit_experiments(id) ON DELETE CASCADE
+      )
+    `);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_bandit_arms_experiment ON bandit_arms(experiment_id)`);
+  },
+  down: (db: Database) => {
+    db.run(`DROP TABLE IF EXISTS bandit_arms`);
+    db.run(`DROP TABLE IF EXISTS bandit_experiments`);
   }
 };
 
@@ -552,5 +602,6 @@ export const migrations: Migration[] = [
   migration005,
   migration006,
   migration007,
-  migration008
+  migration008,
+  migration009
 ];
