@@ -160,6 +160,35 @@ function formatFileTimeline(observations: ObservationRow[], filePath: string): s
   return lines.join('\n');
 }
 
+/**
+ * Fire-and-forget tracking of file read events for context acceptance metrics.
+ */
+async function trackFileRead(
+  sessionId: string | undefined,
+  filePath: string,
+  hasObservations: boolean,
+  observationCount: number,
+  action: 'read' | 'get_observations' | 'skipped',
+  fileSizeBytes?: number
+): Promise<void> {
+  try {
+    await workerHttpRequest('/api/metrics/file-read', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: sessionId || 'unknown',
+        filePath,
+        hasObservations,
+        observationCount,
+        action,
+        fileSizeBytes,
+      }),
+    });
+  } catch {
+    // Fire and forget — don't interrupt the hook
+  }
+}
+
 export const fileContextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     // Extract file_path from toolInput
@@ -224,6 +253,8 @@ export const fileContextHandler: EventHandler = {
       const data = await response.json() as { observations: ObservationRow[]; count: number };
 
       if (!data.observations || data.observations.length === 0) {
+        // Track: read with no observations available
+        trackFileRead(input.sessionId, relativePath, false, 0, 'read').catch(() => {});
         return { continue: true, suppressOutput: true };
       }
 
@@ -236,6 +267,10 @@ export const fileContextHandler: EventHandler = {
       // Allow the read with limit: 1 line — just enough for Edit's "file must be read"
       // check to pass, while keeping token cost near zero. The observation timeline
       // gives Claude full context about prior work on this file.
+      // Track: read with observations available (file-context gate active)
+      const fileSize = (() => { try { return statSync(path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath)).size; } catch { return undefined; } })();
+      trackFileRead(input.sessionId, relativePath, true, dedupedObservations.length, 'read', fileSize).catch(() => {});
+
       const timeline = formatFileTimeline(dedupedObservations, filePath);
       return {
         hookSpecificOutput: {

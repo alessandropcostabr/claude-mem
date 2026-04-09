@@ -20,6 +20,7 @@ import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
+import { FileReadTracking } from '../../../sqlite/metrics/FileReadTracking.js';
 
 export class DataRoutes extends BaseRouteHandler {
   constructor(
@@ -63,6 +64,10 @@ export class DataRoutes extends BaseRouteHandler {
 
     // Import endpoint
     app.post('/api/import', this.handleImport.bind(this));
+
+    // Context acceptance metrics (C4)
+    app.get('/api/metrics/context-acceptance', this.handleGetContextAcceptance.bind(this));
+    app.post('/api/metrics/file-read', this.handleTrackFileRead.bind(this));
   }
 
   /**
@@ -501,6 +506,44 @@ export class DataRoutes extends BaseRouteHandler {
       success: true,
       clearedCount
     });
+  });
+
+  /**
+   * GET /api/metrics/context-acceptance
+   * Query: { since?: number } — epoch ms, defaults to last 7 days
+   */
+  private handleGetContextAcceptance = this.wrapHandler((req: Request, res: Response): void => {
+    const sinceParam = req.query.since as string | undefined;
+    const since = sinceParam ? parseInt(sinceParam, 10) : undefined;
+
+    const db = this.dbManager.getSessionStore().db;
+    const tracking = new FileReadTracking(db);
+    res.json(tracking.getStats(since));
+  });
+
+  /**
+   * POST /api/metrics/file-read
+   * Body: { sessionId, filePath, hasObservations, observationCount, action, fileSizeBytes? }
+   */
+  private handleTrackFileRead = this.wrapHandler((req: Request, res: Response): void => {
+    const { sessionId, filePath, hasObservations, observationCount, action, fileSizeBytes } = req.body;
+
+    if (!sessionId || !filePath || !action) {
+      res.status(400).json({ error: 'sessionId, filePath, and action are required' });
+      return;
+    }
+
+    const db = this.dbManager.getSessionStore().db;
+    const tracking = new FileReadTracking(db);
+    tracking.trackFileRead({
+      sessionId,
+      filePath,
+      hasObservations: !!hasObservations,
+      observationCount: observationCount || 0,
+      action,
+      fileSizeBytes,
+    });
+    res.json({ success: true });
   });
 
 }

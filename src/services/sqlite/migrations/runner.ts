@@ -37,6 +37,7 @@ export class MigrationRunner {
     this.addSessionCustomTitleColumn();
     this.createObservationFeedbackTable();
     this.addSessionPlatformSourceColumn();
+    this.createFileReadTrackingTable();
   }
 
   /**
@@ -921,5 +922,33 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(25, new Date().toISOString());
+  }
+
+  /**
+   * Create file_read_tracking table for context acceptance metrics (migration 28).
+   * Tracks when Claude reads files vs using stored observations.
+   */
+  createFileReadTrackingTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(28) as SchemaVersion | undefined;
+    if (applied) return;
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS file_read_tracking (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        has_observations INTEGER NOT NULL DEFAULT 0,
+        observation_count INTEGER NOT NULL DEFAULT 0,
+        action TEXT NOT NULL CHECK(action IN ('read', 'get_observations', 'skipped')),
+        file_size_bytes INTEGER,
+        created_at_epoch INTEGER NOT NULL
+      )
+    `);
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_file_read_tracking_session ON file_read_tracking(session_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_file_read_tracking_created ON file_read_tracking(created_at_epoch)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_file_read_tracking_action ON file_read_tracking(action)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
+    logger.debug('DB', 'Created file_read_tracking table for context acceptance metrics');
   }
 }

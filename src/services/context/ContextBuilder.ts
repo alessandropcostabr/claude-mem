@@ -12,14 +12,16 @@ import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectName } from '../../utils/project-name.js';
 
-import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
+import type { ContextInput, ContextConfig, Observation, SessionSummary, SplitContext, WakeUpStats } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
+import { formatDate } from '../../shared/timeline-formatting.js';
 import {
   queryObservations,
   queryObservationsMulti,
   querySummaries,
   querySummariesMulti,
+  queryWakeUpStats,
   getPriorSessionMessages,
   prepareSummariesForTimeline,
   buildTimeline,
@@ -71,84 +73,150 @@ function renderEmptyState(project: string, forHuman: boolean): string {
 }
 
 /**
- * Build context output from loaded data
+ * Render L0+L1 progressive wake-up prefix for semantic priming.
+ *
+ * L0 (~50 tokens): project identity, memory span, cross-session awareness.
+ * L1 (~120 tokens): recent decisions, most-observed files.
+ *
+ * Placed at the very start of staticPrefix so it lands at the beginning
+ * of the prompt (exploiting U-shaped attention from "Lost in the Middle").
  */
-function buildContextOutput(
+function renderWakeUpPrefix(project: string, stats: WakeUpStats): string[] {
+  const lines: string[] = [];
+
+  // L0 — Identity
+  const dateRange = stats.firstDate && stats.lastDate
+    ? `Memory spans ${formatDate(stats.firstDate)} to ${formatDate(stats.lastDate)}.`
+    : '';
+  lines.push(
+    `${project} — ${stats.totalObservations} observations across ${stats.totalSessions} sessions. ${dateRange}`.trim()
+  );
+  lines.push('You have persistent cross-session memory. Check the Context Index below before reading files.');
+  lines.push('');
+
+  // L1 — Critical Facts (only if data exists)
+  const hasDecisions = stats.recentDecisions.length > 0;
+  const hasFiles = stats.topFiles.length > 0;
+
+  if (hasDecisions) {
+    lines.push('Recent decisions:');
+    for (const d of stats.recentDecisions) {
+      lines.push(`- ${d.title} (${d.date})`);
+    }
+  }
+
+  if (hasFiles) {
+    const shortFiles = stats.topFiles.map(f => {
+      const parts = f.split('/');
+      return parts[parts.length - 1];
+    });
+    lines.push(`Top files: ${shortFiles.join(', ')}`);
+  }
+
+  if (hasDecisions || hasFiles) {
+    lines.push('');
+  }
+
+  return lines;
+}
+
+/**
+ * Build context output from loaded data, split into static prefix and dynamic context.
+ *
+ * Static prefix: L0+L1 wake-up + legend, column key, instructions — cacheable.
+ * Dynamic context: timeline, summaries, token economics, timestamps.
+ */
+function buildSplitContextOutput(
   project: string,
   observations: Observation[],
   summaries: SessionSummary[],
   config: ContextConfig,
   cwd: string,
   sessionId: string | undefined,
-  forHuman: boolean
-): string {
-  const output: string[] = [];
+  forHuman: boolean,
+  wakeUpStats?: WakeUpStats
+): SplitContext {
+  // === STATIC PREFIX ===
+  const staticLines: string[] = [];
+  if (wakeUpStats && wakeUpStats.totalObservations > 0) {
+    staticLines.push(...renderWakeUpPrefix(project, wakeUpStats));
+  }
+  staticLines.push(...renderHeader(project, calculateTokenEconomics(observations), config, forHuman));
 
-  // Calculate token economics
+  // === DYNAMIC CONTEXT ===
+  const dynamicLines: string[] = [];
   const economics = calculateTokenEconomics(observations);
 
-  // Render header section
-  output.push(...renderHeader(project, economics, config, forHuman));
-
-  // Prepare timeline data
   const displaySummaries = summaries.slice(0, config.sessionCount);
   const summariesForTimeline = prepareSummariesForTimeline(displaySummaries, summaries);
   const timeline = buildTimeline(observations, summariesForTimeline);
   const fullObservationIds = getFullObservationIds(observations, config.fullObservationCount);
 
-  // Render timeline
-  output.push(...renderTimeline(timeline, fullObservationIds, config, cwd, forHuman));
+  dynamicLines.push(...renderTimeline(timeline, fullObservationIds, config, cwd, forHuman));
 
-  // Render most recent summary if applicable
   const mostRecentSummary = summaries[0];
   const mostRecentObservation = observations[0];
 
   if (shouldShowSummary(config, mostRecentSummary, mostRecentObservation)) {
-    output.push(...renderSummaryFields(mostRecentSummary, forHuman));
+    dynamicLines.push(...renderSummaryFields(mostRecentSummary, forHuman));
   }
 
-  // Render previously section (prior assistant message)
   const priorMessages = getPriorSessionMessages(observations, config, sessionId, cwd);
-  output.push(...renderPreviouslySection(priorMessages, forHuman));
+  dynamicLines.push(...renderPreviouslySection(priorMessages, forHuman));
 
-  // Render footer
-  output.push(...renderFooter(economics, config, forHuman));
+  dynamicLines.push(...renderFooter(economics, config, forHuman));
 
-  return output.join('\n').trimEnd();
+  return {
+    staticPrefix: staticLines.join('\n').trimEnd(),
+    dynamicContext: dynamicLines.join('\n').trimEnd(),
+  };
 }
 
 /**
  * Generate context for a project
  *
- * Main entry point for context generation. Orchestrates loading config,
- * querying data, and rendering the final context string.
+ * Main entry point for context generation. Backward-compatible wrapper
+ * that concatenates static + dynamic context.
  */
 export async function generateContext(
   input?: ContextInput,
   forHuman: boolean = false
 ): Promise<string> {
+  const split = await generateSplitContext(input, forHuman);
+  if (!split.dynamicContext) {
+    return split.staticPrefix;
+  }
+  return `${split.staticPrefix}\n${split.dynamicContext}`;
+}
+
+/**
+ * Generate split context for a project (cache-optimized)
+ *
+ * Returns { staticPrefix, dynamicContext } so callers can insert a
+ * cache boundary marker between them.
+ */
+export async function generateSplitContext(
+  input?: ContextInput,
+  forHuman: boolean = false
+): Promise<SplitContext> {
   const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
   const project = getProjectName(cwd);
   const platformSource = input?.platform_source;
 
-  // Use provided projects array (for worktree support) or fall back to single project
   const projects = input?.projects || [project];
 
-  // Full mode: fetch all observations but keep normal rendering (level 1 summaries)
   if (input?.full) {
     config.totalObservationCount = 999999;
     config.sessionCount = 999999;
   }
 
-  // Initialize database
   const db = initializeDatabase();
   if (!db) {
-    return '';
+    return { staticPrefix: '', dynamicContext: '' };
   }
 
   try {
-    // Query data for all projects (supports worktree: parent + worktree combined)
     const observations = projects.length > 1
       ? queryObservationsMulti(db, projects, config, platformSource)
       : queryObservations(db, project, config, platformSource);
@@ -156,23 +224,23 @@ export async function generateContext(
       ? querySummariesMulti(db, projects, config, platformSource)
       : querySummaries(db, project, config, platformSource);
 
-    // Handle empty state
     if (observations.length === 0 && summaries.length === 0) {
-      return renderEmptyState(project, forHuman);
+      return { staticPrefix: renderEmptyState(project, forHuman), dynamicContext: '' };
     }
 
-    // Build and return context
-    const output = buildContextOutput(
+    // Query L0+L1 wake-up stats (lightweight aggregates, no full scan)
+    const wakeUpStats = queryWakeUpStats(db, projects);
+
+    return buildSplitContextOutput(
       project,
       observations,
       summaries,
       config,
       cwd,
       input?.session_id,
-      forHuman
+      forHuman,
+      wakeUpStats
     );
-
-    return output;
   } finally {
     db.close();
   }
