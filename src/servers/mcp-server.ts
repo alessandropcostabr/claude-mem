@@ -284,7 +284,17 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+        limit: { type: 'number', description: 'Max results (default 20)' },
+        project: { type: 'string', description: 'Filter by project name' },
+        type: { type: 'string', description: 'Filter by observation type' },
+        obs_type: { type: 'string', description: 'Filter by obs_type field' },
+        dateStart: { type: 'string', description: 'Start date filter (ISO)' },
+        dateEnd: { type: 'string', description: 'End date filter (ISO)' },
+        offset: { type: 'number', description: 'Pagination offset' },
+        orderBy: { type: 'string', description: 'Sort order: date_desc or date_asc' }
+      },
       additionalProperties: true
     },
     handler: async (args: any) => {
@@ -297,7 +307,13 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        anchor: { type: 'number', description: 'Observation ID to center the timeline around' },
+        query: { type: 'string', description: 'Query to find anchor automatically' },
+        depth_before: { type: 'number', description: 'Items before anchor (default 3)' },
+        depth_after: { type: 'number', description: 'Items after anchor (default 3)' },
+        project: { type: 'string', description: 'Filter by project name' }
+      },
       additionalProperties: true
     },
     handler: async (args: any) => {
@@ -539,6 +555,62 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
       return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/reprime`, rest);
+    }
+  },
+  {
+    name: 'save_memory',
+    description: 'Save a quick note/memory as an observation. Params: text (required), title, project, generated_by_model',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Memory text content (required)' },
+        title: { type: 'string', description: 'Short title for the memory' },
+        project: { type: 'string', description: 'Project name (default: current project)' },
+        generated_by_model: { type: 'string', description: 'Model that generated this memory (e.g. gpt-5.4, claude-opus-4-6)' }
+      },
+      required: ['text']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/memory/save', args);
+    }
+  },
+  {
+    name: 'save_observation',
+    description: 'Save a structured observation with type, narrative, facts, and file references. Params: type (required), narrative (required), title, subtitle, facts, concepts, files_read, files_modified, project, generated_by_model',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', description: 'Observation type: discovery, decision, feature, bugfix, change, pattern, architecture' },
+        title: { type: 'string', description: 'Short title' },
+        subtitle: { type: 'string', description: 'Subtitle/summary' },
+        narrative: { type: 'string', description: 'Full narrative text (required)' },
+        facts: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Key facts as string array'
+        },
+        concepts: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Related concepts'
+        },
+        files_read: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Files read during this observation'
+        },
+        files_modified: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Files modified during this observation'
+        },
+        project: { type: 'string', description: 'Project name' },
+        generated_by_model: { type: 'string', description: 'Model that generated this observation (e.g. gpt-5.4, claude-opus-4-6)' }
+      },
+      required: ['type', 'narrative']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/memory/save-observation', args);
     }
   }
 ];

@@ -10,6 +10,7 @@ import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
+import { formatDate } from '../../shared/timeline-formatting.js';
 import type {
   ContextConfig,
   Observation,
@@ -17,6 +18,7 @@ import type {
   SummaryTimelineItem,
   TimelineItem,
   PriorMessages,
+  WakeUpStats,
 } from './types.js';
 import { SUMMARY_LOOKAHEAD } from './types.js';
 
@@ -330,4 +332,66 @@ export function getFullObservationIds(observations: Observation[], count: number
       .slice(0, count)
       .map(obs => obs.id)
   );
+}
+
+/**
+ * Query L0+L1 wake-up stats for progressive semantic priming.
+ * Lightweight aggregate queries — no full table scan.
+ */
+export function queryWakeUpStats(
+  db: SessionStore,
+  projects: string[]
+): WakeUpStats {
+  const projectPlaceholders = projects.map(() => '?').join(',');
+
+  const l0Row = db.db.prepare(`
+    SELECT
+      COUNT(*) AS total_obs,
+      COUNT(DISTINCT memory_session_id) AS total_sessions,
+      MIN(created_at) AS first_date,
+      MAX(created_at) AS last_date
+    FROM observations
+    WHERE project IN (${projectPlaceholders})
+  `).get(...projects) as {
+    total_obs: number;
+    total_sessions: number;
+    first_date: string | null;
+    last_date: string | null;
+  };
+
+  const decisionRows = db.db.prepare(`
+    SELECT title, created_at
+    FROM observations
+    WHERE project IN (${projectPlaceholders})
+      AND type = 'decision'
+      AND title IS NOT NULL
+    ORDER BY created_at_epoch DESC
+    LIMIT 3
+  `).all(...projects) as { title: string; created_at: string }[];
+
+  const fileRows = db.db.prepare(`
+    SELECT file, COUNT(*) AS cnt
+    FROM (
+      SELECT value AS file FROM observations, json_each(files_read)
+      WHERE project IN (${projectPlaceholders}) AND files_read IS NOT NULL
+      UNION ALL
+      SELECT value AS file FROM observations, json_each(files_modified)
+      WHERE project IN (${projectPlaceholders}) AND files_modified IS NOT NULL
+    )
+    GROUP BY file
+    ORDER BY cnt DESC
+    LIMIT 3
+  `).all(...projects, ...projects) as { file: string; cnt: number }[];
+
+  return {
+    totalObservations: l0Row.total_obs,
+    totalSessions: l0Row.total_sessions,
+    firstDate: l0Row.first_date,
+    lastDate: l0Row.last_date,
+    recentDecisions: decisionRows.map(r => ({
+      title: r.title,
+      date: formatDate(r.created_at),
+    })),
+    topFiles: fileRows.map(r => r.file),
+  };
 }

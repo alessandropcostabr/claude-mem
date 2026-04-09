@@ -101,6 +101,28 @@ export type TimelineItem =
   | { type: 'summary'; data: SummaryTimelineItem };
 
 /**
+ * L0+L1 progressive wake-up stats for semantic priming.
+ * Compact prefix (~170 tokens) injected before the full Context Index.
+ */
+export interface WakeUpStats {
+  totalObservations: number;
+  totalSessions: number;
+  firstDate: string | null;
+  lastDate: string | null;
+  recentDecisions: { title: string; date: string }[];
+  topFiles: string[];
+}
+
+/**
+ * Split context for prompt cache optimization.
+ * Inspired by OpenClaw's SYSTEM_PROMPT_CACHE_BOUNDARY pattern.
+ */
+export interface SplitContext {
+  staticPrefix: string;
+  dynamicContext: string;
+}
+
+/**
  * Token economics data
  */
 export interface TokenEconomics {
