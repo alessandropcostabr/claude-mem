@@ -323,7 +323,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'get_observations',
-    description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project',
+    description: 'Step 3 (fallback): Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project. NOTE: For interactive Read workflows, the PreToolUse file-context hook already injects relevant observations into `hookSpecificOutput.additionalContext` when you Read a file — no explicit call needed. Use this tool when you are a non-interactive caller (Codex, scripts, MCP clients) or when you need full text of a specific observation ID that the timeline did not include.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -337,6 +337,12 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
+      // Lightweight usage telemetry — lets us tell whether this fallback path
+      // is still being exercised. The real enrichment path is the file-context
+      // PreToolUse hook (see src/cli/handlers/file-context.ts), so calls here
+      // should be rare and come mostly from non-interactive clients.
+      const idCount = Array.isArray(args?.ids) ? args.ids.length : 0;
+      logger.info('MCP', `get_observations invoked (fallback path): ${idCount} IDs requested`);
       return await callWorkerAPIPost('/api/observations/batch', args);
     }
   },
