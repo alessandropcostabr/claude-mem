@@ -9,8 +9,34 @@ import {
 import { DEFAULT_PLATFORM_SOURCE } from '../../../shared/platform-source.js';
 
 /**
- * MigrationRunner handles all database schema migrations
- * Extracted from SessionStore to separate concerns
+ * MigrationRunner — ORPHAN AT RUNTIME, kept alive for tests and CLI scripts only.
+ *
+ * ⚠️  CRITICAL NOTE (2026-04-10): This class is NOT on the runtime hot path.
+ * The worker uses `worker-service.ts → worker/DatabaseManager → SessionStore`,
+ * which has its own inline migration methods (`sqlite/SessionStore.ts`,
+ * lines 40-70 constructor and private add*/create*/ensure* methods).
+ *
+ * MigrationRunner is only reached via:
+ *   - `sqlite/Database.ts::DatabaseManager` (a legacy singleton with no
+ *      production callers — used only by test fixtures)
+ *   - `tests/services/sqlite/migration-runner.test.ts` and friends
+ *
+ * Worse: several methods here drifted out of sync with SessionStore. For example,
+ * the `createObservationFeedbackTable` below emits a schema
+ * `(signal_type, session_db_id, metadata)` that does NOT match the actual
+ * production schema `(signal, source, project)` — some other migration path
+ * (CLI script? manual SQL?) created the real table long ago, and this code was
+ * never updated.
+ *
+ * **DO NOT add new migrations here thinking they will reach the worker.**
+ * Add them to `sqlite/SessionStore.ts` and verify they land in
+ * `worker-service.cjs` (run `grep 'your_marker' plugin/scripts/worker-service.cjs`
+ * after `npm run build`).
+ *
+ * Consolidation into a single source of truth is a tracked debt — requires
+ * touching ~9 test files and is out of scope for a routine session. See
+ * the memory note `project_claude_mem_baseline.md` section "C4 metric
+ * refactorada" for context.
  */
 export class MigrationRunner {
   constructor(private db: Database) {}
@@ -38,6 +64,9 @@ export class MigrationRunner {
     this.createObservationFeedbackTable();
     this.addSessionPlatformSourceColumn();
     this.createFileReadTrackingTable();
+    // Note: migration 29 (expandFileReadTrackingActions) lives only in
+    // SessionStore.ts — see class header. Adding it here would be dead code
+    // at runtime and risks drifting from the runtime source.
   }
 
   /**
@@ -869,8 +898,21 @@ export class MigrationRunner {
 
   /**
    * Create observation_feedback table for tracking observation usage signals.
-   * Foundation for tier routing optimization and future Thompson Sampling.
-   * Schema version 24.
+   * Foundation for BanditEngine rewards via FeedbackRecorder.
+   *
+   * CORRECTED 2026-04-10: previous version of this method defined a schema
+   * `(signal_type, session_db_id, metadata)` that did NOT match the columns
+   * the FeedbackRecorder actually writes (`signal, source`, plus optional
+   * `project`). Because this class is orphan at runtime (see the class
+   * header for details), the wrong schema never reached production — some
+   * older migration path created the real table. The authoritative migration
+   * lives in `sqlite/SessionStore.ts::createObservationFeedbackTable` under
+   * schema version 30.
+   *
+   * This method is kept here only so that legacy test fixtures and the
+   * `sqlite/Database.ts` singleton produce a table that matches what the
+   * runtime expects. Uses v24 for historical backward compatibility with
+   * DBs that already recorded that version through runner.ts.
    */
   private createObservationFeedbackTable(): void {
     const applied = this.db.query('SELECT 1 FROM schema_versions WHERE version = 24').get();
@@ -880,18 +922,18 @@ export class MigrationRunner {
       CREATE TABLE IF NOT EXISTS observation_feedback (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         observation_id INTEGER NOT NULL,
-        signal_type TEXT NOT NULL,
-        session_db_id INTEGER,
+        signal TEXT NOT NULL,
+        source TEXT NOT NULL,
+        project TEXT,
         created_at_epoch INTEGER NOT NULL,
-        metadata TEXT,
         FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
       )
     `);
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_feedback_observation ON observation_feedback(observation_id)');
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_feedback_signal ON observation_feedback(signal_type)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_obs_feedback_obs_id ON observation_feedback(observation_id)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_obs_feedback_signal ON observation_feedback(signal, created_at_epoch)');
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(24, new Date().toISOString());
-    logger.debug('DB', 'Created observation_feedback table for usage tracking');
+    logger.debug('DB', 'Created observation_feedback table for usage tracking (runner.ts orphan path)');
   }
 
   /**
@@ -951,4 +993,9 @@ export class MigrationRunner {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
     logger.debug('DB', 'Created file_read_tracking table for context acceptance metrics');
   }
+
+  // Migration 29 (expandFileReadTrackingActions) intentionally NOT defined here.
+  // It lives only in `sqlite/SessionStore.ts` — see the class header for context.
+  // Adding it here would be dead code at runtime and could drift from the
+  // runtime source.
 }

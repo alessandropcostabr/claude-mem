@@ -168,7 +168,7 @@ async function trackFileRead(
   filePath: string,
   hasObservations: boolean,
   observationCount: number,
-  action: 'read' | 'get_observations' | 'skipped',
+  action: 'read' | 'auto_enriched' | 'explicit_fetch' | 'no_context' | 'get_observations' | 'skipped',
   fileSizeBytes?: number
 ): Promise<void> {
   try {
@@ -266,10 +266,11 @@ export const fileContextHandler: EventHandler = {
 
       // Allow the read with limit: 1 line — just enough for Edit's "file must be read"
       // check to pass, while keeping token cost near zero. The observation timeline
-      // gives Claude full context about prior work on this file.
-      // Track: read with observations available (file-context gate active)
+      // gives Claude full context about prior work on this file via additionalContext,
+      // so Claude receives the benefit without needing a separate get_observations tool call.
+      // Track as 'auto_enriched' (migration 29) — the read happened AND the timeline was injected.
       const fileSize = (() => { try { return statSync(path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath)).size; } catch { return undefined; } })();
-      trackFileRead(input.sessionId, relativePath, true, dedupedObservations.length, 'read', fileSize).catch(() => {});
+      trackFileRead(input.sessionId, relativePath, true, dedupedObservations.length, 'auto_enriched', fileSize).catch(() => {});
 
       const timeline = formatFileTimeline(dedupedObservations, filePath);
       return {
