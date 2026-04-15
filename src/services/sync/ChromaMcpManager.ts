@@ -295,7 +295,11 @@ export class ChromaMcpManager {
       // Without this retry, callers see a one-shot error even though reconnect would succeed.
       this.connected = false;
       this.client = null;
+      const staleTransport = this.transport;
       this.transport = null;
+      if (staleTransport) {
+        try { await staleTransport.close(); } catch { /* subprocess already dead */ }
+      }
 
       logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
         error: transportError instanceof Error ? transportError.message : String(transportError)
