@@ -15,7 +15,15 @@ export const SEARCH_CONSTANTS = {
   RECENCY_WINDOW_DAYS: 90,
   RECENCY_WINDOW_MS: 90 * 24 * 60 * 60 * 1000,
   DEFAULT_LIMIT: 20,
-  CHROMA_BATCH_SIZE: 100
+  CHROMA_BATCH_SIZE: 100,
+  /** Composite scoring weights (inspired by CrewAI memory/types.py:352-387) */
+  SEMANTIC_WEIGHT: 0.5,
+  RECENCY_WEIGHT: 0.3,
+  IMPORTANCE_WEIGHT: 0.2,
+  /** Half-life in days for recency decay: score halves every N days */
+  RECENCY_HALF_LIFE_DAYS: 30,
+  /** Minimum composite score to include in results (C2: score threshold) */
+  SCORE_THRESHOLD: 0.15
 } as const;
 
 /**

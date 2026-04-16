@@ -89,14 +89,15 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         };
       }
 
-      // Step 2: Filter by recency (90 days)
-      const recentItems = this.filterByRecency(chromaResults);
-      logger.debug('SEARCH', 'ChromaSearchStrategy: Filtered by recency', {
-        count: recentItems.length
+      // Step 2: Composite scoring (semantic + recency decay + threshold)
+      // Pattern C1+C2 from competitive analysis: CrewAI memory/types.py:352-387
+      const scoredItems = this.scoreAndFilter(chromaResults);
+      logger.debug('SEARCH', 'ChromaSearchStrategy: Scored and filtered', {
+        count: scoredItems.length
       });
 
       // Step 3: Categorize by document type
-      const categorized = this.categorizeByDocType(recentItems, {
+      const categorized = this.categorizeByDocType(scoredItems, {
         searchObservations,
         searchSessions,
         searchPrompts
@@ -185,36 +186,70 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
   }
 
   /**
-   * Filter results by recency (90-day window)
+   * Composite scoring: semantic similarity + recency decay + score threshold.
+   *
+   * Replaces the old hard 90-day cutoff with a graduated decay model.
+   * Pattern from CrewAI memory/types.py:352-387 (competitive analysis 2026-04-16).
+   *
+   * composite = semantic_weight * similarity + recency_weight * decay
+   * where: similarity = 1 - distance (Chroma returns L2 distances)
+   *        decay = 0.5 ^ (age_days / half_life_days)
    *
    * IMPORTANT: ChromaSync.queryChroma() returns deduplicated `ids` (unique sqlite_ids)
-   * but the `metadatas` array may contain multiple entries per sqlite_id (e.g., one
-   * observation can have narrative + multiple facts as separate Chroma documents).
-   *
-   * This method iterates over the deduplicated `ids` and finds the first matching
-   * metadata for each ID to avoid array misalignment issues.
+   * but the `metadatas` array may contain multiple entries per sqlite_id.
+   * This method uses the deduplicated `ids` and maps to first metadata per ID.
    */
-  private filterByRecency(chromaResults: {
+  private scoreAndFilter(chromaResults: {
     ids: number[];
+    distances: number[];
     metadatas: ChromaMetadata[];
-  }): Array<{ id: number; meta: ChromaMetadata }> {
-    const cutoff = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+  }): Array<{ id: number; meta: ChromaMetadata; compositeScore: number }> {
+    const {
+      SEMANTIC_WEIGHT,
+      RECENCY_WEIGHT,
+      RECENCY_HALF_LIFE_DAYS,
+      SCORE_THRESHOLD
+    } = SEARCH_CONSTANTS;
 
-    // Build a map from sqlite_id to first metadata for efficient lookup
+    const now = Date.now();
+
+    // Build maps from sqlite_id to first metadata and best distance
     const metadataByIdMap = new Map<number, ChromaMetadata>();
+    const distanceByIdMap = new Map<number, number>();
+
     for (const meta of chromaResults.metadatas) {
       if (meta?.sqlite_id !== undefined && !metadataByIdMap.has(meta.sqlite_id)) {
         metadataByIdMap.set(meta.sqlite_id, meta);
       }
     }
 
-    // Iterate over deduplicated ids and get corresponding metadata
+    // distances array is aligned with ids (both deduplicated by queryChroma)
+    for (let i = 0; i < chromaResults.ids.length; i++) {
+      distanceByIdMap.set(chromaResults.ids[i], chromaResults.distances[i] ?? 0);
+    }
+
     return chromaResults.ids
-      .map(id => ({
-        id,
-        meta: metadataByIdMap.get(id) as ChromaMetadata
-      }))
-      .filter(item => item.meta && item.meta.created_at_epoch > cutoff);
+      .map(id => {
+        const meta = metadataByIdMap.get(id) as ChromaMetadata;
+        const distance = distanceByIdMap.get(id) ?? 0;
+
+        // Chroma L2 distance → similarity [0,1] (clamped)
+        const similarity = Math.max(0, Math.min(1, 1 - distance));
+
+        // Exponential recency decay: halves every HALF_LIFE days
+        const ageDays = meta
+          ? Math.max(0, (now - meta.created_at_epoch) / 86_400_000)
+          : 999;
+        const decay = Math.pow(0.5, ageDays / RECENCY_HALF_LIFE_DAYS);
+
+        const compositeScore =
+          SEMANTIC_WEIGHT * similarity +
+          RECENCY_WEIGHT * decay;
+
+        return { id, meta, compositeScore };
+      })
+      .filter(item => item.meta && item.compositeScore >= SCORE_THRESHOLD)
+      .sort((a, b) => b.compositeScore - a.compositeScore);
   }
 
   /**
