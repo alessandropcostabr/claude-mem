@@ -75,8 +75,17 @@ export class SearchOrchestrator {
     return await this.executeWithFallback(options);
   }
 
+  /** Confidence thresholds for adaptive depth routing (C3) */
+  private static readonly CONFIDENCE_HIGH = 0.45;
+  private static readonly CONFIDENCE_LOW = 0.25;
+
   /**
-   * Execute search with fallback logic
+   * Execute search with fallback logic and adaptive depth routing.
+   *
+   * C3 pattern from CrewAI recall_flow.py:286-356:
+   * - High confidence (>= 0.45): return immediately
+   * - Low confidence (< 0.25): broaden search (remove project filter, increase limit)
+   * - Medium: return as-is
    */
   private async executeWithFallback(
     options: NormalizedParams
@@ -92,22 +101,50 @@ export class SearchOrchestrator {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
       const result = await this.chromaStrategy.search(options);
 
-      // If Chroma succeeded (even with 0 results), return
-      if (result.usedChroma) {
+      // If Chroma failed entirely, fall back to SQLite
+      if (!result.usedChroma) {
+        logger.debug('SEARCH', 'Orchestrator: Chroma failed, falling back to SQLite', {});
+        const fallbackResult = await this.sqliteStrategy.search({
+          ...options,
+          query: undefined
+        });
+        return { ...fallbackResult, fellBack: true };
+      }
+
+      // Adaptive depth routing based on confidence (topScore)
+      const confidence = result.topScore ?? 0;
+
+      if (confidence >= SearchOrchestrator.CONFIDENCE_HIGH) {
+        // High confidence: return immediately
+        logger.debug('SEARCH', 'Orchestrator: High confidence, returning', {
+          confidence: confidence.toFixed(3)
+        });
         return result;
       }
 
-      // Chroma failed - fall back to SQLite for filter-only
-      logger.debug('SEARCH', 'Orchestrator: Chroma failed, falling back to SQLite', {});
-      const fallbackResult = await this.sqliteStrategy.search({
-        ...options,
-        query: undefined // Remove query for SQLite fallback
-      });
+      if (confidence < SearchOrchestrator.CONFIDENCE_LOW && options.project) {
+        // Low confidence + project-scoped: retry without project filter
+        logger.debug('SEARCH', 'Orchestrator: Low confidence, broadening search', {
+          confidence: confidence.toFixed(3),
+          removingProjectFilter: options.project
+        });
+        const broadResult = await this.chromaStrategy.search({
+          ...options,
+          project: undefined,
+          limit: Math.min((options.limit || SEARCH_CONSTANTS.DEFAULT_LIMIT) * 2, 50)
+        });
 
-      return {
-        ...fallbackResult,
-        fellBack: true
-      };
+        if (broadResult.usedChroma) {
+          const broadConfidence = broadResult.topScore ?? 0;
+          // Use broader results if they're better
+          if (broadConfidence > confidence) {
+            return { ...broadResult, fellBack: true };
+          }
+        }
+      }
+
+      // Medium confidence or broadening didn't help: return original
+      return result;
     }
 
     // PATH 3: No Chroma available

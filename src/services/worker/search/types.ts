@@ -115,6 +115,8 @@ export interface StrategySearchResult {
   fellBack: boolean;
   /** Strategy that produced the results */
   strategy: SearchStrategyHint;
+  /** Top composite score from results (0-1), used for confidence routing (C3) */
+  topScore?: number;
 }
 
 /**

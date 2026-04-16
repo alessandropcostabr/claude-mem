@@ -125,17 +125,20 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         });
       }
 
+      const topScore = scoredItems.length > 0 ? scoredItems[0].compositeScore : 0;
       logger.debug('SEARCH', 'ChromaSearchStrategy: Hydrated results', {
         observations: observations.length,
         sessions: sessions.length,
-        prompts: prompts.length
+        prompts: prompts.length,
+        topScore: topScore.toFixed(3)
       });
 
       return {
         results: { observations, sessions, prompts },
         usedChroma: true,
         fellBack: false,
-        strategy: 'chroma'
+        strategy: 'chroma',
+        topScore
       };
 
     } catch (error) {
