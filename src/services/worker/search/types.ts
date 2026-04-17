@@ -94,6 +94,8 @@ export interface StrategySearchOptions extends ExtendedSearchOptions {
   query?: string;
   /** Force a specific strategy */
   strategyHint?: SearchStrategyHint;
+  /** Minimum similarity score (0-1). Results below this are discarded BEFORE top_k. */
+  scoreThreshold?: number;
 }
 
 /**

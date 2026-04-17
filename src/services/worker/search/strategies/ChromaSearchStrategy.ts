@@ -48,7 +48,8 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       files,
       limit = SEARCH_CONSTANTS.DEFAULT_LIMIT,
       project,
-      orderBy = 'date_desc'
+      orderBy = 'date_desc',
+      scoreThreshold
     } = options;
 
     if (!query) {
@@ -89,8 +90,38 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         };
       }
 
-      // Step 2: Filter by recency (90 days)
-      const recentItems = this.filterByRecency(chromaResults);
+      // Step 2a: Filter by score threshold (before top_k/recency)
+      let filteredResults = chromaResults;
+      if (scoreThreshold !== undefined && scoreThreshold > 0) {
+        const maxDistance = 2 * (1 - scoreThreshold);
+        const beforeCount = filteredResults.ids.length;
+        const passing: { ids: number[]; distances: number[]; metadatas: any[] } = {
+          ids: [], distances: [], metadatas: []
+        };
+        for (let i = 0; i < filteredResults.ids.length; i++) {
+          if (filteredResults.distances[i] <= maxDistance) {
+            passing.ids.push(filteredResults.ids[i]);
+            passing.distances.push(filteredResults.distances[i]);
+            passing.metadatas.push(filteredResults.metadatas[i]);
+          }
+        }
+        filteredResults = passing;
+        logger.debug('SEARCH', 'ChromaSearchStrategy: Score threshold applied', {
+          scoreThreshold, maxDistance, before: beforeCount, after: filteredResults.ids.length
+        });
+
+        if (filteredResults.ids.length === 0) {
+          return {
+            results: { observations: [], sessions: [], prompts: [] },
+            usedChroma: true,
+            fellBack: false,
+            strategy: 'chroma'
+          };
+        }
+      }
+
+      // Step 2b: Filter by recency (90 days)
+      const recentItems = this.filterByRecency(filteredResults);
       logger.debug('SEARCH', 'ChromaSearchStrategy: Filtered by recency', {
         count: recentItems.length
       });

@@ -278,6 +278,15 @@ export class SearchOrchestrator {
       delete normalized.dateEnd;
     }
 
+    // Parse score_threshold (API uses snake_case, internal uses camelCase)
+    if (normalized.score_threshold !== undefined) {
+      const val = parseFloat(normalized.score_threshold);
+      if (!isNaN(val) && val > 0 && val <= 1) {
+        normalized.scoreThreshold = val;
+      }
+      delete normalized.score_threshold;
+    }
+
     return normalized;
   }
 

@@ -281,7 +281,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'search',
-    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, dateStart, dateEnd, offset, orderBy',
+    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, dateStart, dateEnd, offset, orderBy, score_threshold',
     inputSchema: {
       type: 'object',
       properties: {
@@ -293,7 +293,8 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         dateStart: { type: 'string', description: 'Start date filter (ISO)' },
         dateEnd: { type: 'string', description: 'End date filter (ISO)' },
         offset: { type: 'number', description: 'Pagination offset' },
-        orderBy: { type: 'string', description: 'Sort order: date_desc or date_asc' }
+        orderBy: { type: 'string', description: 'Sort order: date_desc or date_asc' },
+        score_threshold: { type: 'number', description: 'Min similarity score 0-1. Results below are discarded BEFORE top_k (default: none)' }
       },
       additionalProperties: true
     },
