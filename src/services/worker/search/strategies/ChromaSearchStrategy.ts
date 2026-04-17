@@ -126,6 +126,10 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         count: recentItems.length
       });
 
+      // Step 2c: Compute composite scores (C1) and re-rank
+      const compositeScores = this.computeCompositeScores(recentItems, filteredResults);
+      recentItems.sort((a, b) => (compositeScores.get(b.id) ?? 0) - (compositeScores.get(a.id) ?? 0));
+
       // Step 3: Categorize by document type
       const categorized = this.categorizeByDocType(recentItems, {
         searchObservations,
@@ -155,7 +159,17 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         });
       }
 
-      logger.debug('SEARCH', 'ChromaSearchStrategy: Hydrated results', {
+      // Step 5: Re-rank hydrated results by composite score (C1)
+      const reRank = <T extends { id?: number }>(items: T[]): T[] => {
+        return items.sort((a, b) =>
+          (compositeScores.get(b.id ?? 0) ?? 0) - (compositeScores.get(a.id ?? 0) ?? 0)
+        );
+      };
+      observations = reRank(observations);
+      sessions = reRank(sessions);
+      prompts = reRank(prompts);
+
+      logger.debug('SEARCH', 'ChromaSearchStrategy: Hydrated and re-ranked results', {
         observations: observations.length,
         sessions: sessions.length,
         prompts: prompts.length
@@ -178,6 +192,47 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         strategy: 'chroma'
       };
     }
+  }
+
+  /**
+   * C1: Compute composite scores combining semantic similarity and recency decay.
+   * Formula: composite = semantic_weight * similarity + recency_weight * recency
+   * Where: similarity = 1 - distance/2, recency = exp(-age_days / half_life)
+   */
+  private computeCompositeScores(
+    items: Array<{ id: number; meta: ChromaMetadata }>,
+    chromaResults: { ids: number[]; distances: number[] }
+  ): Map<number, number> {
+    const {
+      COMPOSITE_SEMANTIC_WEIGHT: semW,
+      COMPOSITE_RECENCY_WEIGHT: recW,
+      COMPOSITE_RECENCY_HALF_LIFE_DAYS: halfLife,
+    } = SEARCH_CONSTANTS;
+    const now = Date.now();
+
+    const distanceMap = new Map<number, number>();
+    for (let i = 0; i < chromaResults.ids.length; i++) {
+      distanceMap.set(chromaResults.ids[i], chromaResults.distances[i]);
+    }
+
+    const scores = new Map<number, number>();
+    for (const item of items) {
+      const distance = distanceMap.get(item.id) ?? 1;
+      const similarity = Math.max(0, 1 - distance / 2);
+
+      const ageMs = now - (item.meta?.created_at_epoch ?? now);
+      const ageDays = Math.max(0, ageMs / (24 * 60 * 60 * 1000));
+      const recency = Math.exp(-ageDays / halfLife);
+
+      scores.set(item.id, semW * similarity + recW * recency);
+    }
+
+    logger.debug('SEARCH', 'ChromaSearchStrategy: Composite scores computed', {
+      count: scores.size,
+      weights: { semantic: semW, recency: recW, halfLifeDays: halfLife },
+    });
+
+    return scores;
   }
 
   /**
