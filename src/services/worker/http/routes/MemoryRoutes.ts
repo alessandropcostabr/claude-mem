@@ -27,7 +27,7 @@ export class MemoryRoutes extends BaseRouteHandler {
    * Body: { text: string, title?: string, project?: string }
    */
   private handleSaveMemory = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { text, title, project } = req.body;
+    const { text, title, project, type, concepts, facts, subtitle, files_read, files_modified } = req.body;
     const targetProject = project || this.defaultProject;
 
     if (!text || typeof text !== 'string' || text.trim().length === 0) {
@@ -41,16 +41,16 @@ export class MemoryRoutes extends BaseRouteHandler {
     // 1. Get or create manual session for project
     const memorySessionId = sessionStore.getOrCreateManualSession(targetProject);
 
-    // 2. Build observation
+    // 2. Build observation — accept payload fields, fallback to defaults
     const observation = {
-      type: 'discovery',  // Use existing valid type
+      type: type || 'discovery',
       title: title || text.substring(0, 60).trim() + (text.length > 60 ? '...' : ''),
-      subtitle: 'Manual memory',
-      facts: [] as string[],
+      subtitle: subtitle || 'Manual memory',
+      facts: Array.isArray(facts) ? facts : [],
       narrative: text,
-      concepts: [] as string[],
-      files_read: [] as string[],
-      files_modified: [] as string[]
+      concepts: Array.isArray(concepts) ? concepts : [],
+      files_read: Array.isArray(files_read) ? files_read : [],
+      files_modified: Array.isArray(files_modified) ? files_modified : []
     };
 
     // 3. Store to SQLite
