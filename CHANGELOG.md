@@ -4,21 +4,81 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.2.0] - 2026-04-18
+
+## Highlights
+
+**Worktree Adoption** — When a git worktree is merged back into its parent branch, its observations are now consolidated into the parent project's view, so memory follows the code after a merge.
+
+## Features
+
+- **Worktree adoption engine** — consolidates merged-worktree observations under the parent project (#2052)
+- **`npx claude-mem adopt`** — new CLI command with `--dry-run` and `--branch X` flags for manual adoption
+- **Auto-adoption on worker startup** — merged worktrees are adopted automatically when the worker service starts
+- **CWD-based project remap** — project identity derived from `pending_messages.cwd`, applied on worker startup
+- **Parent + worktree read scope** — worktree sessions now include parent repo observations in their read scope
+- **Composite project names** — parent/worktree naming prevents observations from crossing worktrees
+- **Merged-into-parent badge** — UI now flags observations that have been adopted from a merged worktree
+- **Observer-sessions project hidden** — internal bookkeeping project no longer appears in UI lists
+
+## Fixes
+
+- Drop orphan flag when filtering empty-string spawn args (#2049)
+- Self-heal Chroma metadata on re-run
+- Schema guard, startup adoption path, and query parity hardening
+- Git operation timeouts + dry-run sentinel fixes
+- Context derivation uses explicit `projects` array rather than cwd
+
+## Chores
+
+- Removed auto-generated per-directory `CLAUDE.md` files across the tree
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v12.1.6...v12.2.0
+
+## [12.1.6] - 2026-04-16
+
+## Fix
+
+**Critical regression fix (#2049): observations no longer save on Claude Code 2.1.109+**
+
+Resolves 100% observation/summary failure on Claude Code 2.1.109+ caused by a latent bug in how the bundled Agent SDK emits the `--setting-sources` flag.
+
+### Root cause
+
+The Agent SDK emits `["--setting-sources", ""]` whenever `settingSources` defaults to `[]`. Our existing Bun-compat filter stripped the empty string but left an orphan `--setting-sources` flag, which then consumed the following `--permission-mode` as its value. Claude Code 2.1.109+ rejects this with:
+
+```
+Error processing --setting-sources:
+  Invalid setting source: --permission-mode.
+```
+
+Every observation SDK spawn crashed with exit code 1 before any data could be written.
+
+### Fix
+
+`ProcessRegistry.createPidCapturingSpawn` now uses a pair-aware filter: when an empty-string arg follows a `--flag`, both are dropped together. The SDK default (no setting sources) is preserved by omission.
+
+### Credits
+
+Thanks to @GigiTiti-Kai for the detailed root-cause report in #2049.
+
 ## [12.1.5] - 2026-04-15
 
-## Forced update to ship --setting-sources fix
+Users on v12.1.3 experience 100% observation failure due to empty-string arg filtering corrupting `--setting-sources` on Claude Code 2.1.109+. The fix already landed in v12.1.4 (commit 3d92684 — `fix: filter empty string args before Bun spawn()`). This release forces the update to propagate across npm and the marketplace so every user gets the fix.
 
-Users on v12.1.3 experience 100% observation failure due to empty-string arg filtering corrupting `--setting-sources` on Claude Code 2.1.109+. The fix landed in v12.1.4 (commit 3d92684 — `fix: filter empty string args before Bun spawn()`). This release forces the update to propagate across npm and the marketplace.
-
+## Backlog cleanup
 Also shipped earlier today: the April 2026 backlog consolidation merged 93 PRs and 147 issues into 138 clean tracking issues (95 bugs, 43 feature requests).
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v12.1.4...v12.1.5
+## Upgrade
+```bash
+npm install -g claude-mem@12.1.5
+```
 
 ## [12.1.4] - 2026-04-15
 
-A Claude instance inserted `$CMEM` token branding into the context injection header during a compression refactor. Reverted back to the original descriptive format: `# [project] recent context, datetime`
+## Bug Fixes
 
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v12.1.3...v12.1.4
+- **Revert unauthorized $CMEM branding**: A prior Claude instance inserted `$CMEM` token branding into the context injection header during a compression refactor. Reverted back to the original descriptive format: `# [project] recent context, datetime`
 
 ## [12.1.3] - 2026-04-15
 
