@@ -11,6 +11,9 @@
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
+import { VectorSync } from '../sync/VectorSync.js';
+import { QdrantClient } from '../sync/QdrantClient.js';
+import type { VectorBackend } from '../sync/VectorBackend.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -19,7 +22,7 @@ import type { DBSession } from '../worker-types.js';
 export class DatabaseManager {
   private sessionStore: SessionStore | null = null;
   private sessionSearch: SessionSearch | null = null;
-  private chromaSync: ChromaSync | null = null;
+  private vectorSync: VectorBackend | null = null;
 
   /**
    * Initialize database connection (once, stays open)
@@ -29,13 +32,24 @@ export class DatabaseManager {
     this.sessionStore = new SessionStore();
     this.sessionSearch = new SessionSearch();
 
-    // Initialize ChromaSync only if Chroma is enabled (SQLite-only fallback when disabled)
+    // Initialize vector backend based on settings
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const backend = (settings as any).CLAUDE_MEM_VECTOR_BACKEND || 'chroma';
     const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
-    if (chromaEnabled) {
-      this.chromaSync = new ChromaSync('claude-mem');
+
+    if (backend === 'qdrant') {
+      const host = (settings as any).CLAUDE_MEM_QDRANT_HOST || '127.0.0.1';
+      const port = (settings as any).CLAUDE_MEM_QDRANT_PORT || '6333';
+      const apiKey = (settings as any).CLAUDE_MEM_QDRANT_API_KEY || '';
+      const embedHost = (settings as any).CLAUDE_MEM_EMBED_HOST || '127.0.0.1:11436';
+      const qdrant = new QdrantClient(host, port, apiKey);
+      this.vectorSync = new VectorSync('claude-mem', qdrant, embedHost);
+      logger.info('DB', 'Vector backend: Qdrant', { host, port });
+    } else if (backend === 'chroma' && chromaEnabled) {
+      this.vectorSync = new ChromaSync('claude-mem') as any;
+      logger.info('DB', 'Vector backend: Chroma');
     } else {
-      logger.info('DB', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, using SQLite-only search');
+      logger.info('DB', 'Vector search disabled, using SQLite-only (FTS5)');
     }
 
     logger.info('DB', 'Database initialized');
@@ -45,10 +59,10 @@ export class DatabaseManager {
    * Close database connection and cleanup all resources
    */
   async close(): Promise<void> {
-    // Close ChromaSync first (MCP connection lifecycle managed by ChromaMcpManager)
-    if (this.chromaSync) {
-      await this.chromaSync.close();
-      this.chromaSync = null;
+    // Close vector backend
+    if (this.vectorSync) {
+      await this.vectorSync.close();
+      this.vectorSync = null;
     }
 
     if (this.sessionStore) {
@@ -83,10 +97,11 @@ export class DatabaseManager {
   }
 
   /**
-   * Get ChromaSync instance (returns null if Chroma is disabled)
+   * Get vector sync backend (returns null if vector search is disabled)
+   * Alias getChromaSync() maintained for consumer compatibility
    */
-  getChromaSync(): ChromaSync | null {
-    return this.chromaSync;
+  getChromaSync(): VectorBackend | null {
+    return this.vectorSync;
   }
 
   // REMOVED: cleanupOrphanedSessions - violates "EVERYTHING SHOULD SAVE ALWAYS"

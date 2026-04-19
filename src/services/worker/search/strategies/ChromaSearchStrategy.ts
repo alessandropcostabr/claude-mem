@@ -20,7 +20,7 @@ import {
   SessionSummarySearchResult,
   UserPromptSearchResult
 } from '../types.js';
-import { ChromaSync } from '../../../sync/ChromaSync.js';
+import type { VectorBackend } from '../../../sync/VectorBackend.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { logger } from '../../../../utils/logger.js';
 
@@ -28,7 +28,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
   readonly name = 'chroma';
 
   constructor(
-    private chromaSync: ChromaSync,
+    private chromaSync: VectorBackend,
     private sessionStore: SessionStore
   ) {
     super();
@@ -69,7 +69,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
 
       // Step 1: Chroma semantic search
       logger.debug('SEARCH', 'ChromaSearchStrategy: Querying Chroma', { query, searchType });
-      const chromaResults = await this.chromaSync.queryChroma(
+      const chromaResults = await this.chromaSync.queryVector(
         query,
         SEARCH_CONSTANTS.CHROMA_BATCH_SIZE,
         whereFilter
@@ -187,7 +187,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
   /**
    * Filter results by recency (90-day window)
    *
-   * IMPORTANT: ChromaSync.queryChroma() returns deduplicated `ids` (unique sqlite_ids)
+   * IMPORTANT: VectorBackend.queryVector() returns deduplicated `ids` (unique sqlite_ids)
    * but the `metadatas` array may contain multiple entries per sqlite_id (e.g., one
    * observation can have narrative + multiple facts as separate Chroma documents).
    *

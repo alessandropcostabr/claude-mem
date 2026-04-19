@@ -76,6 +76,14 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_API_KEY: string;
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
+  // Vector Backend Selection
+  CLAUDE_MEM_VECTOR_BACKEND: string;   // 'chroma' | 'qdrant' | 'none'
+  // Qdrant Configuration
+  CLAUDE_MEM_QDRANT_HOST: string;
+  CLAUDE_MEM_QDRANT_PORT: string;
+  CLAUDE_MEM_QDRANT_API_KEY: string;
+  // Embedding Server
+  CLAUDE_MEM_EMBED_HOST: string;       // FastEmbed server host:port
 }
 
 export class SettingsDefaultsManager {
@@ -147,6 +155,14 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_API_KEY: '',
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
+    // Vector Backend Selection (chroma = legacy, qdrant = new, none = FTS5 only)
+    CLAUDE_MEM_VECTOR_BACKEND: 'chroma',
+    // Qdrant Configuration
+    CLAUDE_MEM_QDRANT_HOST: '127.0.0.1',
+    CLAUDE_MEM_QDRANT_PORT: '6333',
+    CLAUDE_MEM_QDRANT_API_KEY: '',
+    // Embedding Server (FastEmbed HTTP)
+    CLAUDE_MEM_EMBED_HOST: '127.0.0.1:11436',
   };
 
   /**

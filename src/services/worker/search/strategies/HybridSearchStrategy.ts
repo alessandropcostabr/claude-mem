@@ -18,7 +18,7 @@ import {
   ObservationSearchResult,
   SessionSummarySearchResult
 } from '../types.js';
-import { ChromaSync } from '../../../sync/ChromaSync.js';
+import type { VectorBackend } from '../../../sync/VectorBackend.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { SessionSearch } from '../../../sqlite/SessionSearch.js';
 import { logger } from '../../../../utils/logger.js';
@@ -27,7 +27,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
   readonly name = 'hybrid';
 
   constructor(
-    private chromaSync: ChromaSync,
+    private chromaSync: VectorBackend,
     private sessionStore: SessionStore,
     private sessionSearch: SessionSearch
   ) {
@@ -83,7 +83,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
       // Step 2: Chroma semantic ranking
       const ids = metadataResults.map(obs => obs.id);
-      const chromaResults = await this.chromaSync.queryChroma(
+      const chromaResults = await this.chromaSync.queryVector(
         concept,
         Math.min(ids.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE)
       );
@@ -149,7 +149,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
       // Step 2: Chroma semantic ranking
       const ids = metadataResults.map(obs => obs.id);
-      const chromaResults = await this.chromaSync.queryChroma(
+      const chromaResults = await this.chromaSync.queryVector(
         typeStr,
         Math.min(ids.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE)
       );
@@ -220,7 +220,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
       // Step 2: Chroma semantic ranking for observations
       const ids = metadataResults.observations.map(obs => obs.id);
-      const chromaResults = await this.chromaSync.queryChroma(
+      const chromaResults = await this.chromaSync.queryVector(
         filePath,
         Math.min(ids.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE)
       );

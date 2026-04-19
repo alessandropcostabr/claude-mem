@@ -835,6 +835,17 @@ export class ChromaSync {
    * ChromaMcpManager is a singleton and manages its own lifecycle
    * We don't close it here - it's closed during graceful shutdown
    */
+  /**
+   * Alias for queryChroma — VectorBackend interface compatibility
+   */
+  async queryVector(
+    query: string,
+    limit: number,
+    whereFilter?: Record<string, any>
+  ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
+    return this.queryChroma(query, limit, whereFilter);
+  }
+
   async close(): Promise<void> {
     // ChromaMcpManager is a singleton and manages its own lifecycle
     // We don't close it here - it's closed during graceful shutdown

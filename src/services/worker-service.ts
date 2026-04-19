@@ -359,13 +359,16 @@ export class WorkerService {
         runOneTimeChromaMigration();
       }
 
-      // Initialize ChromaMcpManager only if Chroma is enabled
+      // Initialize vector backend
+      const vectorBackend = (settings as any).CLAUDE_MEM_VECTOR_BACKEND || 'chroma';
       const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
-      if (chromaEnabled) {
+      if (vectorBackend === 'qdrant') {
+        logger.info('SYSTEM', 'Vector backend: Qdrant (no ChromaMcpManager needed)');
+      } else if (vectorBackend === 'chroma' && chromaEnabled) {
         this.chromaMcpManager = ChromaMcpManager.getInstance();
         logger.info('SYSTEM', 'ChromaMcpManager initialized (lazy - connects on first use)');
       } else {
-        logger.info('SYSTEM', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, skipping ChromaMcpManager');
+        logger.info('SYSTEM', 'Vector search disabled, skipping ChromaMcpManager');
       }
 
       const modeId = settings.CLAUDE_MEM_MODE;
@@ -421,8 +424,26 @@ export class WorkerService {
 
       await this.startTranscriptWatcher(settings);
 
-      // Auto-backfill Chroma for all projects if out of sync with SQLite (fire-and-forget)
-      if (this.chromaMcpManager) {
+      // Auto-backfill vector store on startup
+      // Qdrant: disabled by default — run backfill manually to avoid OOM on prod
+      // Set CLAUDE_MEM_QDRANT_AUTO_BACKFILL=true to enable
+      const autoBackfill = (settings as any).CLAUDE_MEM_QDRANT_AUTO_BACKFILL === 'true';
+      if (vectorBackend === 'qdrant' && autoBackfill) {
+        const { VectorSync } = await import('./sync/VectorSync.js');
+        const { QdrantClient } = await import('./sync/QdrantClient.js');
+        const qdrantHost = (settings as any).CLAUDE_MEM_QDRANT_HOST || '127.0.0.1';
+        const qdrantPort = (settings as any).CLAUDE_MEM_QDRANT_PORT || '6333';
+        const qdrantKey = (settings as any).CLAUDE_MEM_QDRANT_API_KEY || '';
+        const embedHost = (settings as any).CLAUDE_MEM_EMBED_HOST || '127.0.0.1:11436';
+        const qdrant = new QdrantClient(qdrantHost, qdrantPort, qdrantKey);
+        VectorSync.backfillAllProjects(qdrant, embedHost).then(() => {
+          logger.info('VECTOR_SYNC', 'Backfill check complete for all projects');
+        }).catch(error => {
+          logger.error('VECTOR_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
+        });
+      } else if (vectorBackend === 'qdrant') {
+        logger.info('VECTOR_SYNC', 'Auto-backfill disabled — run manually when ready');
+      } else if (this.chromaMcpManager) {
         ChromaSync.backfillAllProjects().then(() => {
           logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
         }).catch(error => {

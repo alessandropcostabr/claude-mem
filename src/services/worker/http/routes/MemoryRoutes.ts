@@ -68,8 +68,8 @@ export class MemoryRoutes extends BaseRouteHandler {
       title: observation.title
     });
 
-    // 4. Sync to ChromaDB (async, fire-and-forget)
-    chromaSync.syncObservation(
+    // 4. Sync to vector backend (async, fire-and-forget)
+    chromaSync?.syncObservation(
       result.id,
       memorySessionId,
       targetProject,
@@ -78,7 +78,7 @@ export class MemoryRoutes extends BaseRouteHandler {
       result.createdAtEpoch,
       0
     ).catch(err => {
-      logger.error('CHROMA', 'ChromaDB sync failed', { id: result.id }, err as Error);
+      logger.error('VECTOR', 'Vector sync failed', { id: result.id }, err as Error);
     });
 
     // 5. Return success
