@@ -22,6 +22,7 @@ import type { VectorBackend } from '../../../sync/VectorBackend.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { SessionSearch } from '../../../sqlite/SessionSearch.js';
 import { logger } from '../../../../utils/logger.js';
+import { HybridScorer } from '../../../scoring/HybridScorer.js';
 
 export class HybridSearchStrategy extends BaseSearchStrategy implements SearchStrategy {
   readonly name = 'hybrid';
@@ -88,16 +89,15 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
         Math.min(ids.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE)
       );
 
-      // Step 3: Intersect - keep only IDs from metadata, in Chroma rank order
-      const rankedIds = this.intersectWithRanking(ids, chromaResults.ids);
-      logger.debug('SEARCH', 'HybridSearchStrategy: Ranked by semantic relevance', {
+      // Step 3: Intersect with hybrid scoring
+      const rankedIds = this.intersectWithRanking(ids, chromaResults.ids, chromaResults.distances, project);
+      logger.debug('SEARCH', 'HybridSearchStrategy: Ranked by hybrid score', {
         count: rankedIds.length
       });
 
-      // Step 4: Hydrate in semantic rank order
+      // Step 4: Hydrate in hybrid score order
       if (rankedIds.length > 0) {
         const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
-        // Restore semantic ranking order
         observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
 
         return {
@@ -154,13 +154,13 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
         Math.min(ids.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE)
       );
 
-      // Step 3: Intersect with ranking
-      const rankedIds = this.intersectWithRanking(ids, chromaResults.ids);
-      logger.debug('SEARCH', 'HybridSearchStrategy: Ranked by semantic relevance', {
+      // Step 3: Intersect with hybrid scoring
+      const rankedIds = this.intersectWithRanking(ids, chromaResults.ids, chromaResults.distances, project);
+      logger.debug('SEARCH', 'HybridSearchStrategy: Ranked by hybrid score', {
         count: rankedIds.length
       });
 
-      // Step 4: Hydrate in rank order
+      // Step 4: Hydrate in hybrid score order
       if (rankedIds.length > 0) {
         const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
         observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
@@ -225,8 +225,8 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
         Math.min(ids.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE)
       );
 
-      // Step 3: Intersect with ranking
-      const rankedIds = this.intersectWithRanking(ids, chromaResults.ids);
+      // Step 3: Intersect with hybrid scoring
+      const rankedIds = this.intersectWithRanking(ids, chromaResults.ids, chromaResults.distances, project);
       logger.debug('SEARCH', 'HybridSearchStrategy: Ranked observations', {
         count: rankedIds.length
       });
@@ -253,18 +253,55 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
   }
 
   /**
-   * Intersect metadata IDs with Chroma IDs, preserving Chroma's rank order
+   * Intersect metadata IDs with Chroma IDs, rank by hybrid score.
+   * Falls back to Chroma order if scoring data unavailable.
    */
-  private intersectWithRanking(metadataIds: number[], chromaIds: number[]): number[] {
+  private intersectWithRanking(
+    metadataIds: number[],
+    chromaIds: number[],
+    chromaDistances?: number[],
+    queryProject?: string
+  ): number[] {
     const metadataSet = new Set(metadataIds);
-    const rankedIds: number[] = [];
+    const intersected: number[] = [];
 
     for (const chromaId of chromaIds) {
-      if (metadataSet.has(chromaId) && !rankedIds.includes(chromaId)) {
-        rankedIds.push(chromaId);
+      if (metadataSet.has(chromaId) && !intersected.includes(chromaId)) {
+        intersected.push(chromaId);
       }
     }
 
-    return rankedIds;
+    if (intersected.length === 0 || !chromaDistances || !queryProject) {
+      return intersected;
+    }
+
+    // Build distance map: chromaId → distance
+    const distanceMap = new Map<number, number>();
+    for (let i = 0; i < chromaIds.length; i++) {
+      distanceMap.set(chromaIds[i], chromaDistances[i] ?? 0);
+    }
+
+    // Hydrate observations for scoring dimensions
+    const observations = this.sessionStore.getObservationsByIds(intersected, {});
+    if (observations.length === 0) {
+      return intersected;
+    }
+
+    const scorer = new HybridScorer();
+    const scored = scorer.scoreAndRank(
+      observations.map(obs => ({
+        id: obs.id,
+        created_at_epoch: obs.created_at_epoch,
+        relevance_count: (obs as any).relevance_count ?? 0,
+        correctness: (obs as any).correctness ?? 'unverified',
+        project: obs.project,
+      })),
+      queryProject,
+      distanceMap
+    );
+
+    HybridScorer.logScoring(scored, 'search', 5);
+
+    return scored.map(s => s.id);
   }
 }

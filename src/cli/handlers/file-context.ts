@@ -15,12 +15,13 @@ import { isProjectExcluded } from '../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { getProjectContext } from '../../utils/project-name.js';
+import { HybridScorer } from '../../services/scoring/HybridScorer.js';
 
 /** Skip the gate for files smaller than this — timeline overhead exceeds file read cost. */
 const FILE_READ_GATE_MIN_BYTES = 1_500;
 
-/** Fetch more candidates than the display limit so dedup still fills 15 slots. */
-const FETCH_LOOKAHEAD_LIMIT = 40;
+/** Fetch more candidates than the display limit so scoring still fills 15 slots. */
+const FETCH_LOOKAHEAD_LIMIT = 60;
 
 /** Maximum observations to show in the timeline. */
 const DISPLAY_LIMIT = 15;
@@ -52,10 +53,14 @@ interface ObservationRow {
   id: number;
   memory_session_id: string;
   title: string | null;
+  subtitle?: string | null;
   type: string;
   created_at_epoch: number;
   files_read: string | null;
   files_modified: string | null;
+  project?: string;
+  relevance_count?: number;
+  correctness?: string;
 }
 
 /**
@@ -100,10 +105,31 @@ function deduplicateObservations(
     return { obs, specificityScore };
   });
 
-  // Stable sort: higher specificity first, preserve chronological order within same score
-  scored.sort((a, b) => b.specificityScore - a.specificityScore);
+  // Phase 3: Apply hybrid scoring (recency + authority + coherence + specificity)
+  const queryProject = scored[0]?.obs.project || '';
+  const hybridScorer = new HybridScorer();
+  const hybridScored = scored.map(({ obs, specificityScore }) => {
+    const dims = hybridScorer.computeScore({
+      createdAtEpoch: obs.created_at_epoch,
+      relevanceCount: (obs as any).relevance_count ?? 0,
+      correctness: (obs as any).correctness ?? 'unverified',
+      observationProject: obs.project || '',
+      queryProject,
+    });
+    // Combine: specificity (0-4 → 0-1) + hybrid dimensions
+    const normalizedSpecificity = specificityScore / 4;
+    const finalScore = normalizedSpecificity * 0.3 + dims.final * 0.7;
+    return { obs, finalScore, dims };
+  });
 
-  return scored.slice(0, displayLimit).map(s => s.obs);
+  hybridScored.sort((a, b) => b.finalScore - a.finalScore);
+
+  const result = hybridScored.slice(0, displayLimit);
+  if (result.length > 0) {
+    logger.info('SCORING', `file-context: top=${result[0].obs.id} score=${result[0].finalScore.toFixed(3)} rec=${result[0].dims.recency.toFixed(2)} auth=${result[0].dims.authority.toFixed(2)} n=${result.length}`);
+  }
+
+  return result.map(s => s.obs);
 }
 
 function formatFileTimeline(
@@ -161,7 +187,21 @@ function formatFileTimeline(
       const title = (obs.title || 'Untitled').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
       const icon = TYPE_ICONS[obs.type] || '\u2753';
       const time = compactTime(formatTime(obs.created_at_epoch));
-      lines.push(`${obs.id} ${time} ${icon} ${title}`);
+      const ageDays = (Date.now() - obs.created_at_epoch) / (1000 * 60 * 60 * 24);
+
+      // Hydration condicional: recentes mostram mais detalhe
+      if (ageDays < 1) {
+        // < 24h: title + subtitle + facts snippet
+        const subtitle = obs.subtitle ? ` — ${obs.subtitle}` : '';
+        lines.push(`${obs.id} ${time} ${icon} ${title}${subtitle}`);
+      } else if (ageDays < 7) {
+        // 1-7 dias: title only (compact)
+        lines.push(`${obs.id} ${time} ${icon} ${title}`);
+      } else {
+        // > 7 dias: title truncated (minimal footprint)
+        const shortTitle = title.length > 80 ? title.slice(0, 77) + '...' : title;
+        lines.push(`${obs.id} ${time} ${icon} ${shortTitle}`);
+      }
     }
   }
 
