@@ -76,12 +76,18 @@ export class HybridScorer {
   }
 
   /**
-   * Normalize Chroma distance to [0,1] similarity score.
-   * Chroma returns L2 distance: 0 = identical, ~2 = max distance for normalized embeddings.
+   * Normalize vector distance to [0,1] similarity score.
+   * Qdrant (via VectorSync): cosine distance = 1 - score, range 0→1
+   * Chroma: L2 distance, range 0→~2
+   * We divide by MAX_DISTANCE to normalize both to [0,1].
    */
   static normalizeSemantic(chromaDistance?: number, ftsRank?: number): number {
     if (chromaDistance !== undefined) {
-      return Math.max(0, 1 - Math.min(chromaDistance / 2, 1));
+      // Qdrant distances are 0→1, Chroma L2 are 0→2.
+      // For Qdrant (<=1): divides by 1, full range preserved.
+      // For Chroma (>1): divides by 2, backward compatible.
+      const maxDist = chromaDistance > 1 ? 2 : 1;
+      return Math.max(0, 1 - Math.min(chromaDistance / maxDist, 1));
     }
     if (ftsRank !== undefined) {
       // FTS5 rank is negative (closer to 0 = better match)
