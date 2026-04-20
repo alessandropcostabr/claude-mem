@@ -22,8 +22,9 @@ import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProcessBySession, ensureProcessExit } from '../../ProcessRegistry.js';
-import { getProjectContext } from '../../../../utils/project-name.js';
+import { getProjectName } from '../../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
+import { BanditEngine } from '../../../bandit/BanditEngine.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -94,36 +95,10 @@ export class SessionRoutes extends BaseRouteHandler {
    * The next generator will use the new provider with shared conversationHistory.
    */
   private static readonly STALE_GENERATOR_THRESHOLD_MS = 30_000; // 30 seconds (#1099)
-  private static readonly MAX_SESSION_WALL_CLOCK_MS = 4 * 60 * 60 * 1000; // 4 hours (#1590)
 
   private ensureGeneratorRunning(sessionDbId: number, source: string): void {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
-
-    // Wall-clock age guard: refuse to start new generators for sessions that have
-    // been alive too long to prevent runaway API costs (Issue #1590).
-    // Use the persisted started_at_epoch from the DB so the guard survives worker
-    // restarts (session.startTime is reset to Date.now() on every re-activation).
-    const dbSessionRecord = this.dbManager.getSessionStore().db
-      .prepare('SELECT started_at_epoch FROM sdk_sessions WHERE id = ? LIMIT 1')
-      .get(sessionDbId) as { started_at_epoch: number } | undefined;
-    const sessionOriginMs = dbSessionRecord?.started_at_epoch ?? session.startTime;
-    const sessionAgeMs = Date.now() - sessionOriginMs;
-    if (sessionAgeMs > SessionRoutes.MAX_SESSION_WALL_CLOCK_MS) {
-      logger.warn('SESSION', 'Session exceeded wall-clock age limit — aborting to prevent runaway spend', {
-        sessionId: sessionDbId,
-        ageHours: Math.round(sessionAgeMs / 3_600_000 * 10) / 10,
-        limitHours: SessionRoutes.MAX_SESSION_WALL_CLOCK_MS / 3_600_000,
-        source
-      });
-      if (!session.abortController.signal.aborted) {
-        session.abortController.abort();
-      }
-      const pendingStore = this.sessionManager.getPendingMessageStore();
-      pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
-      this.sessionManager.removeSessionImmediate(sessionDbId);
-      return;
-    }
 
     // GUARD: Prevent duplicate spawns
     if (this.spawnInProgress.get(sessionDbId)) {
@@ -213,37 +188,15 @@ export class SessionRoutes extends BaseRouteHandler {
     session.currentProvider = provider;
     session.lastGeneratorActivity = Date.now();
 
-    // Capture the AbortController that belongs to THIS generator run.
-    // session.abortController may be replaced (e.g. by stale-recovery) before the
-    // .catch / .finally handlers run, so binding it here prevents a stale rejection
-    // from cancelling a brand-new controller (race condition guard).
-    const myController = session.abortController;
-
     session.generatorPromise = agent.startSession(session, this.workerService)
       .catch(error => {
         // Only log non-abort errors
-        if (myController.signal.aborted) return;
-
-        const errorMsg = error instanceof Error ? error.message : String(error);
-
-        // Treat SIGTERM (exit code 143) as intentional termination, not a crash.
-        // When a subprocess is killed externally, abort the controller to prevent
-        // crash recovery from immediately respawning the process (Issue #1590).
-        // APPROVED OVERRIDE
-        if (errorMsg.includes('code 143') || errorMsg.includes('signal SIGTERM')) {
-          logger.warn('SESSION', 'Generator killed by external signal — aborting session to prevent respawn', {
-            sessionId: session.sessionDbId,
-            provider,
-            error: errorMsg
-          });
-          myController.abort();
-          return;
-        }
-
+        if (session.abortController.signal.aborted) return;
+        
         logger.error('SESSION', `Generator failed`, {
           sessionId: session.sessionDbId,
           provider: provider,
-          error: errorMsg
+          error: error.message
         }, error);
 
         // Mark all processing messages as failed so they can be retried or abandoned
@@ -555,7 +508,7 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
     const platformSource = normalizePlatformSource(req.body.platformSource);
-    const project = typeof cwd === 'string' && cwd.trim() ? getProjectContext(cwd).primary : '';
+    const project = typeof cwd === 'string' && cwd.trim() ? getProjectName(cwd) : '';
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId');
@@ -720,9 +673,6 @@ export class SessionRoutes extends BaseRouteHandler {
       status: 'active',
       sessionDbId,
       queueLength,
-      // Expose whether the last storage operation included a summary record.
-      // The Stop hook uses this to detect silent summary loss when the queue empties (#1633).
-      summaryStored: session.lastSummaryStored ?? null,
       uptime: Date.now() - session.startTime
     });
   });
@@ -878,6 +828,12 @@ export class SessionRoutes extends BaseRouteHandler {
     });
   });
 
+  private banditEngine?: BanditEngine;
+
+  setBanditEngine(engine: BanditEngine): void {
+    this.banditEngine = engine;
+  }
+
   // Simple tool names that produce low-complexity observations
   private static readonly SIMPLE_TOOLS = new Set([
     'Read', 'Glob', 'Grep', 'LS', 'ListMcpResourcesTool'
@@ -891,20 +847,18 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private applyTierRouting(session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>): void {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+
+    // Clear stale override before re-evaluating
+    session.modelOverride = undefined;
+
     if (settings.CLAUDE_MEM_TIER_ROUTING_ENABLED === 'false') {
-      session.modelOverride = undefined;
       return;
     }
-
-    // Clear stale override before re-evaluating — prevents previous tier
-    // from persisting when queue composition changes between spawns.
-    session.modelOverride = undefined;
 
     const pendingStore = this.sessionManager.getPendingMessageStore();
     const pending = pendingStore.peekPendingTypes(session.sessionDbId);
 
     if (pending.length === 0) {
-      session.modelOverride = undefined;
       return;
     }
 
@@ -913,6 +867,29 @@ export class SessionRoutes extends BaseRouteHandler {
       m.message_type === 'observation' && m.tool_name && SessionRoutes.SIMPLE_TOOLS.has(m.tool_name)
     );
 
+    // Bandit-based model selection
+    const banditEnabled = this.banditEngine && settings.CLAUDE_MEM_BANDIT_ENABLED === 'true';
+    const candidateModels = (settings.CLAUDE_MEM_BANDIT_CANDIDATE_MODELS || '').split(',').map(s => s.trim()).filter(Boolean);
+
+    if (banditEnabled && candidateModels.length >= 2) {
+      // Use obs_type (discovery, change, bugfix...) not tool_name (Bash, Read...)
+      // to match FeedbackRecorder which rewards arms as {obs_type}:{model}.
+      // Since obs_type isn't known before processing, use the dominant type
+      // from the bandit's own reward history — arms with actual feedback data.
+      const rewardedType = this.banditEngine!.getDominantRewardedType('model-per-obs-type') || 'discovery';
+
+      const arms = candidateModels.map(model => `${rewardedType}:${model}`);
+      const selectedArm = this.banditEngine!.selectArm('model-per-obs-type', arms);
+      const selectedModel = selectedArm.split(':').slice(1).join(':');
+
+      session.modelOverride = selectedModel;
+      logger.debug('SESSION', `Bandit routing: ${selectedArm}`, {
+        sessionId: session.sessionDbId, model: selectedModel, type: rewardedType
+      });
+      return;
+    }
+
+    // Fallback: rule-based tier routing (original behavior)
     if (hasSummarize) {
       const summaryModel = settings.CLAUDE_MEM_TIER_SUMMARY_MODEL;
       if (summaryModel) {
@@ -929,8 +906,19 @@ export class SessionRoutes extends BaseRouteHandler {
           sessionId: session.sessionDbId, model: simpleModel
         });
       }
-    } else {
-      session.modelOverride = undefined;
     }
   }
+}
+
+function mostFrequent(arr: string[]): string {
+  const counts = new Map<string, number>();
+  for (const item of arr) {
+    counts.set(item, (counts.get(item) || 0) + 1);
+  }
+  let best = arr[0];
+  let bestCount = 0;
+  for (const [item, count] of counts) {
+    if (count > bestCount) { best = item; bestCount = count; }
+  }
+  return best;
 }

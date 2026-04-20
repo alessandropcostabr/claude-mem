@@ -1,5 +1,28 @@
+/**
+ * SessionStore — Runtime source of truth for DB schema migrations.
+ *
+ * ⚠️  CRITICAL NOTE (2026-04-10): The worker-service hot path goes
+ *   `worker-service.ts → worker/DatabaseManager → SessionStore`.
+ * This class's constructor (below, around line 40) is where all the
+ * production migrations actually run via `this.ensureWorkerPortColumn()` etc.
+ *
+ * There is a legacy parallel implementation in
+ * `sqlite/migrations/runner.ts::MigrationRunner` that is NOT reached by the
+ * worker — it exists only for tests and the unused `sqlite/Database.ts`
+ * singleton. It has drifted out of sync in several places (wrong schema
+ * for observation_feedback, missing v26, etc). See the header of that file.
+ *
+ * **ALWAYS add new migrations HERE.** Verify they land in
+ * `plugin/scripts/worker-service.cjs` after `npm run build` by grepping for
+ * a literal unique to your migration (e.g. a SQL keyword or column name).
+ *
+ * Consolidation of runner.ts into this file is a tracked debt — it would
+ * require touching ~9 test files that import `MigrationRunner` directly.
+ * Defer that to a dedicated refactor session.
+ */
+
 import { Database } from 'bun:sqlite';
-import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
+import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
@@ -65,7 +88,9 @@ export class SessionStore {
     this.addSessionCustomTitleColumn();
     this.addSessionPlatformSourceColumn();
     this.addObservationModelColumns();
-    this.ensureMergedIntoProjectColumns();
+    this.createFileReadTrackingTable();
+    this.expandFileReadTrackingActions();
+    this.createObservationFeedbackTable();
   }
 
   /**
@@ -218,7 +243,7 @@ export class SessionStore {
   private removeSessionSummariesUniqueConstraint(): void {
     // Check actual constraint state — don't rely on version tracking alone (issue #979)
     const summariesIndexes = this.db.query('PRAGMA index_list(session_summaries)').all() as IndexInfo[];
-    const hasUniqueConstraint = summariesIndexes.some(idx => idx.unique === 1 && idx.origin !== 'pk');
+    const hasUniqueConstraint = summariesIndexes.some(idx => idx.unique === 1);
 
     if (!hasUniqueConstraint) {
       // Already migrated (no constraint exists)
@@ -946,33 +971,185 @@ export class SessionStore {
   }
 
   /**
-   * Ensure merged_into_project columns + indices exist on observations and session_summaries.
-   *
-   * Self-idempotent via PRAGMA table_info guard — does NOT bump schema_versions.
-   * Mirrors MigrationRunner.ensureMergedIntoProjectColumns so bundled artifacts
-   * that embed SessionStore (e.g. context-generator.cjs) stay schema-consistent
-   * with the standalone migration path.
+   * Create file_read_tracking table for context enrichment metrics (migration 28).
+   * Tracks when Claude reads files and whether the PreToolUse hook injected
+   * an observation timeline via hookSpecificOutput.additionalContext.
    */
-  private ensureMergedIntoProjectColumns(): void {
-    const obsCols = this.db
-      .query('PRAGMA table_info(observations)')
-      .all() as TableColumnInfo[];
-    if (!obsCols.some(c => c.name === 'merged_into_project')) {
-      this.db.run('ALTER TABLE observations ADD COLUMN merged_into_project TEXT');
-    }
-    this.db.run(
-      'CREATE INDEX IF NOT EXISTS idx_observations_merged_into ON observations(merged_into_project)'
-    );
+  private createFileReadTrackingTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(28);
+    if (applied) return;
 
-    const sumCols = this.db
-      .query('PRAGMA table_info(session_summaries)')
-      .all() as TableColumnInfo[];
-    if (!sumCols.some(c => c.name === 'merged_into_project')) {
-      this.db.run('ALTER TABLE session_summaries ADD COLUMN merged_into_project TEXT');
+    const existing = this.db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='file_read_tracking'"
+    ).get();
+
+    if (!existing) {
+      // Create with the legacy (migration 28) CHECK constraint — migration 29
+      // below will expand it if this is a fresh install. Keeping the legacy
+      // shape here preserves schema_versions semantics for historical DBs.
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS file_read_tracking (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          file_path TEXT NOT NULL,
+          has_observations INTEGER NOT NULL DEFAULT 0,
+          observation_count INTEGER NOT NULL DEFAULT 0,
+          action TEXT NOT NULL CHECK(action IN ('read', 'get_observations', 'skipped')),
+          file_size_bytes INTEGER,
+          created_at_epoch INTEGER NOT NULL
+        )
+      `);
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_file_read_tracking_session ON file_read_tracking(session_id)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_file_read_tracking_created ON file_read_tracking(created_at_epoch)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_file_read_tracking_action ON file_read_tracking(action)');
     }
-    this.db.run(
-      'CREATE INDEX IF NOT EXISTS idx_summaries_merged_into ON session_summaries(merged_into_project)'
-    );
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(28, new Date().toISOString());
+  }
+
+  /**
+   * Expand file_read_tracking.action enum (migration 29, 2026-04-10).
+   *
+   * The pre-migration-28 enum was `('read', 'get_observations', 'skipped')`, which
+   * forced the PreToolUse hook to always emit `'read'` regardless of whether it
+   * injected an observation timeline. That made the derived acceptance rate
+   * permanently stuck at 0%, even though the hook was successfully enriching
+   * every qualifying read.
+   *
+   * Migration 29 rebuilds the table with an expanded CHECK constraint accepting
+   * ('read', 'auto_enriched', 'explicit_fetch', 'no_context', 'get_observations',
+   * 'skipped'), then backfills legacy rows — rows with has_observations=1 are
+   * remapped from 'read' to 'auto_enriched' so historical data reflects what
+   * the hook was actually doing.
+   *
+   * Safe on live data — the file_read_tracking table is typically < 1 MB and
+   * the rebuild happens inside a single transaction.
+   */
+  private expandFileReadTrackingActions(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(29);
+    if (applied) return;
+
+    const existing = this.db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='file_read_tracking'"
+    ).get();
+
+    if (!existing) {
+      // No table to migrate — createFileReadTrackingTable() handles fresh installs
+      // and this is a no-op on truly blank DBs.
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(29, new Date().toISOString());
+      return;
+    }
+
+    // Check whether the constraint already accepts 'auto_enriched'. If a previous
+    // manual migration (2026-04-10 DirectSQL) already rebuilt the table, we can
+    // skip the transaction and just record the version.
+    const schemaSql = this.db.prepare(
+      "SELECT sql FROM sqlite_master WHERE name='file_read_tracking'"
+    ).get() as { sql: string } | undefined;
+    if (schemaSql?.sql?.includes('auto_enriched')) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(29, new Date().toISOString());
+      return;
+    }
+
+    const tx = this.db.transaction(() => {
+      this.db.run(`
+        CREATE TABLE file_read_tracking_v2 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          file_path TEXT NOT NULL,
+          has_observations INTEGER NOT NULL DEFAULT 0,
+          observation_count INTEGER NOT NULL DEFAULT 0,
+          action TEXT NOT NULL CHECK(action IN (
+            'read',
+            'auto_enriched',
+            'explicit_fetch',
+            'no_context',
+            'get_observations',
+            'skipped'
+          )),
+          file_size_bytes INTEGER,
+          created_at_epoch INTEGER NOT NULL
+        )
+      `);
+      this.db.run(`
+        INSERT INTO file_read_tracking_v2
+          (id, session_id, file_path, has_observations, observation_count,
+           action, file_size_bytes, created_at_epoch)
+        SELECT
+          id,
+          session_id,
+          file_path,
+          has_observations,
+          observation_count,
+          CASE
+            WHEN action = 'read' AND has_observations = 1 THEN 'auto_enriched'
+            ELSE action
+          END AS action,
+          file_size_bytes,
+          created_at_epoch
+        FROM file_read_tracking
+      `);
+      this.db.run('DROP TABLE file_read_tracking');
+      this.db.run('ALTER TABLE file_read_tracking_v2 RENAME TO file_read_tracking');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_file_read_tracking_session ON file_read_tracking(session_id)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_file_read_tracking_created ON file_read_tracking(created_at_epoch)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_file_read_tracking_action ON file_read_tracking(action)');
+    });
+    tx();
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(29, new Date().toISOString());
+  }
+
+  /**
+   * Create observation_feedback table for tracking observation usage signals
+   * (migration 30, 2026-04-10).
+   *
+   * This table is the foundation for the BanditEngine reward loop — each entry
+   * is an event (`signal`) emitted by the `FeedbackRecorder` when an observation
+   * is injected, hit in search, reacted to on Telegram, etc. Columns intentionally
+   * match what `src/services/bandit/FeedbackRecorder.ts::recordFeedback()` writes:
+   *   `(observation_id, signal, source, created_at_epoch)`.
+   *
+   * **Historical context (debt resolved here)**: A previous attempt in
+   * `sqlite/migrations/runner.ts::createObservationFeedbackTable` (commit
+   * 0fcc0788, 2026-04-01) defined a schema `(signal_type, session_db_id,
+   * metadata)` that does NOT match what FeedbackRecorder inserts. Because
+   * runner.ts is orphan at runtime, that wrong-schema migration never ran in
+   * production — some long-forgotten manual or ad-hoc script created the
+   * table with the correct shape on existing DBs. But a FRESH install would
+   * have had no table at all, and FeedbackRecorder + BanditEngine would
+   * crash on first feedback signal. Migration 30 closes that gap.
+   *
+   * Idempotent on existing DBs: if the table already exists we just record
+   * v30 in schema_versions without touching the data. Uses v30 (not v27)
+   * because SessionStore and runner.ts had a v24 collision, and SessionStore
+   * already recorded v24 for `addOnUpdateCascadeToForeignKeys`.
+   */
+  private createObservationFeedbackTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(30);
+    if (applied) return;
+
+    const existing = this.db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='observation_feedback'"
+    ).get();
+
+    if (!existing) {
+      this.db.run(`
+        CREATE TABLE observation_feedback (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          observation_id INTEGER NOT NULL,
+          signal TEXT NOT NULL,
+          source TEXT NOT NULL,
+          project TEXT,
+          created_at_epoch INTEGER NOT NULL,
+          FOREIGN KEY (observation_id) REFERENCES observations(id) ON DELETE CASCADE
+        )
+      `);
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_obs_feedback_obs_id ON observation_feedback(observation_id)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_obs_feedback_signal ON observation_feedback(signal, created_at_epoch)');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(30, new Date().toISOString());
   }
 
   /**
@@ -1223,9 +1400,8 @@ export class SessionStore {
       SELECT DISTINCT project
       FROM sdk_sessions
       WHERE project IS NOT NULL AND project != ''
-        AND project != ?
     `;
-    const params: unknown[] = [OBSERVER_SESSIONS_PROJECT];
+    const params: unknown[] = [];
 
     if (normalizedPlatformSource) {
       query += ' AND COALESCE(platform_source, ?) = ?';
@@ -1250,10 +1426,9 @@ export class SessionStore {
         MAX(started_at_epoch) as latest_epoch
       FROM sdk_sessions
       WHERE project IS NOT NULL AND project != ''
-        AND project != ?
       GROUP BY COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}'), project
       ORDER BY latest_epoch DESC
-    `).all(OBSERVER_SESSIONS_PROJECT) as Array<{ platform_source: string; project: string; latest_epoch: number }>;
+    `).all() as Array<{ platform_source: string; project: string; latest_epoch: number }>;
 
     const projects: string[] = [];
     const seenProjects = new Set<string>();

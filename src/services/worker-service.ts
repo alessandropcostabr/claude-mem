@@ -22,6 +22,8 @@ import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
+import { BanditEngine } from './bandit/BanditEngine.js';
+import { FeedbackRecorder } from './bandit/FeedbackRecorder.js';
 
 // Worker spawn / Windows-cooldown helpers are defined in ./worker-spawner.ts
 // so that lightweight consumers (e.g. the MCP server running under Node) can
@@ -45,7 +47,6 @@ import {
   getPlatformTimeout,
   aggressiveStartupCleanup,
   runOneTimeChromaMigration,
-  runOneTimeCwdRemap,
   cleanStalePidFile,
   isProcessAlive,
   spawnDaemon,
@@ -59,7 +60,6 @@ import {
   httpShutdown
 } from './infrastructure/HealthMonitor.js';
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
-import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos } from './infrastructure/WorktreeAdoption.js';
 
 // Server imports
 import { Server } from './server/Server.js';
@@ -155,6 +155,9 @@ export class WorkerService {
 
   // Route handlers
   private searchRoutes: SearchRoutes | null = null;
+  private sessionRoutes: SessionRoutes | null = null;
+  private banditEngine: BanditEngine | null = null;
+  private feedbackRecorder: FeedbackRecorder | null = null;
 
   // Chroma MCP manager (lazy - connects on first use)
   private chromaMcpManager: ChromaMcpManager | null = null;
@@ -299,7 +302,8 @@ export class WorkerService {
 
     // Standard routes (registered AFTER guard middleware)
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
+    this.sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this);
+    this.server.registerRoutes(this.sessionRoutes);
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
@@ -361,40 +365,13 @@ export class WorkerService {
         runOneTimeChromaMigration();
       }
 
-      // One-time remap of pre-worktree project names using pending_messages.cwd.
-      // Must run before dbManager.initialize() so we don't hold the DB open.
-      runOneTimeCwdRemap();
-
-      // Stamp merged worktrees so their observations surface under the parent
-      // project. Runs every startup (not marker-gated) because git state evolves
-      // and the engine is fully idempotent. Must also precede dbManager.initialize().
-      try {
-        const adoptions = await adoptMergedWorktreesForAllKnownRepos({});
-        for (const adoption of adoptions) {
-          if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
-            logger.info('SYSTEM', 'Merged worktrees adopted on startup', adoption);
-          }
-          if (adoption.errors.length > 0) {
-            logger.warn('SYSTEM', 'Worktree adoption had per-branch errors', {
-              repoPath: adoption.repoPath,
-              errors: adoption.errors
-            });
-          }
-        }
-      } catch (err) {
-        logger.error('SYSTEM', 'Worktree adoption failed (non-fatal)', {}, err as Error);
-      }
-
-      // Initialize vector backend
-      const vectorBackend = (settings as any).CLAUDE_MEM_VECTOR_BACKEND || 'chroma';
+      // Initialize ChromaMcpManager only if Chroma is enabled
       const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
-      if (vectorBackend === 'qdrant') {
-        logger.info('SYSTEM', 'Vector backend: Qdrant (no ChromaMcpManager needed)');
-      } else if (vectorBackend === 'chroma' && chromaEnabled) {
+      if (chromaEnabled) {
         this.chromaMcpManager = ChromaMcpManager.getInstance();
         logger.info('SYSTEM', 'ChromaMcpManager initialized (lazy - connects on first use)');
       } else {
-        logger.info('SYSTEM', 'Vector search disabled, skipping ChromaMcpManager');
+        logger.info('SYSTEM', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, skipping ChromaMcpManager');
       }
 
       const modeId = settings.CLAUDE_MEM_MODE;
@@ -421,7 +398,47 @@ export class WorkerService {
         formattingService,
         timelineService
       );
-      this.searchRoutes = new SearchRoutes(searchManager);
+      // Initialize Bandit Engine for Thompson Sampling optimization
+      try {
+        const sessionStore = this.dbManager.getSessionStore();
+        const db = sessionStore.db;
+        if (db) {
+          this.banditEngine = new BanditEngine();
+          this.banditEngine.init(db);
+
+          const settings = SettingsDefaultsManager.loadFromFile(
+            path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json')
+          );
+          this.banditEngine.setConfig({
+            enabled: settings.CLAUDE_MEM_BANDIT_ENABLED === 'true',
+            candidateModels: (settings.CLAUDE_MEM_BANDIT_CANDIDATE_MODELS || '').split(',').map((s: string) => s.trim()).filter(Boolean),
+            minPullsBeforeExploit: parseInt(settings.CLAUDE_MEM_BANDIT_MIN_PULLS_BEFORE_EXPLOIT || '3', 10),
+            logSelections: settings.CLAUDE_MEM_BANDIT_LOG_SELECTIONS !== 'false',
+          });
+
+          this.banditEngine.registerExperiment({
+            id: 'model-per-obs-type',
+            description: 'Select best model per observation type via Thompson Sampling',
+            rewardSignals: ['semantic_inject_hit', 'search_accessed'],
+            createdAt: Date.now()
+          });
+
+          this.feedbackRecorder = new FeedbackRecorder(db, this.banditEngine);
+
+          if (this.sessionRoutes) {
+            this.sessionRoutes.setBanditEngine(this.banditEngine);
+          }
+
+          logger.info('WORKER', 'BanditEngine initialized', {
+            enabled: settings.CLAUDE_MEM_BANDIT_ENABLED === 'true',
+            candidates: settings.CLAUDE_MEM_BANDIT_CANDIDATE_MODELS || '(none)'
+          });
+        }
+      } catch (banditError) {
+        logger.warn('WORKER', 'BanditEngine initialization failed (non-fatal)', {}, banditError as Error);
+      }
+
+      this.searchRoutes = new SearchRoutes(searchManager, this.feedbackRecorder ?? undefined);
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
@@ -450,26 +467,8 @@ export class WorkerService {
 
       await this.startTranscriptWatcher(settings);
 
-      // Auto-backfill vector store on startup
-      // Qdrant: disabled by default — run backfill manually to avoid OOM on prod
-      // Set CLAUDE_MEM_QDRANT_AUTO_BACKFILL=true to enable
-      const autoBackfill = (settings as any).CLAUDE_MEM_QDRANT_AUTO_BACKFILL === 'true';
-      if (vectorBackend === 'qdrant' && autoBackfill) {
-        const { VectorSync } = await import('./sync/VectorSync.js');
-        const { QdrantClient } = await import('./sync/QdrantClient.js');
-        const qdrantHost = (settings as any).CLAUDE_MEM_QDRANT_HOST || '127.0.0.1';
-        const qdrantPort = (settings as any).CLAUDE_MEM_QDRANT_PORT || '6333';
-        const qdrantKey = (settings as any).CLAUDE_MEM_QDRANT_API_KEY || '';
-        const embedHost = (settings as any).CLAUDE_MEM_EMBED_HOST || '127.0.0.1:11436';
-        const qdrant = new QdrantClient(qdrantHost, qdrantPort, qdrantKey);
-        VectorSync.backfillAllProjects(qdrant, embedHost).then(() => {
-          logger.info('VECTOR_SYNC', 'Backfill check complete for all projects');
-        }).catch(error => {
-          logger.error('VECTOR_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
-        });
-      } else if (vectorBackend === 'qdrant') {
-        logger.info('VECTOR_SYNC', 'Auto-backfill disabled — run manually when ready');
-      } else if (this.chromaMcpManager) {
+      // Auto-backfill Chroma for all projects if out of sync with SQLite (fire-and-forget)
+      if (this.chromaMcpManager) {
         ChromaSync.backfillAllProjects().then(() => {
           logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
         }).catch(error => {
@@ -1234,45 +1233,6 @@ async function main() {
       break;
     }
 
-    case 'adopt': {
-      const dryRun = process.argv.includes('--dry-run');
-      const branchIndex = process.argv.indexOf('--branch');
-      const branchValue = branchIndex !== -1 ? process.argv[branchIndex + 1] : undefined;
-      if (branchIndex !== -1 && (!branchValue || branchValue.startsWith('--'))) {
-        console.error('Usage: adopt [--dry-run] [--branch <branch>] [--cwd <path>]');
-        process.exit(1);
-      }
-      const onlyBranch = branchValue;
-      // Honor an explicit --cwd override so the NPX CLI can pass through the
-      // user's working directory (the spawn sets cwd to the marketplace dir).
-      const cwdIndex = process.argv.indexOf('--cwd');
-      const cwdValue = cwdIndex !== -1 ? process.argv[cwdIndex + 1] : undefined;
-      if (cwdIndex !== -1 && (!cwdValue || cwdValue.startsWith('--'))) {
-        console.error('Usage: adopt [--dry-run] [--branch <branch>] [--cwd <path>]');
-        process.exit(1);
-      }
-      const repoPath = cwdValue ?? process.cwd();
-
-      const result = await adoptMergedWorktrees({ repoPath, dryRun, onlyBranch });
-
-      const tag = result.dryRun ? '(dry-run)' : '(applied)';
-      console.log(`\nWorktree adoption ${tag}`);
-      console.log(`  Parent project:       ${result.parentProject || '(unknown)'}`);
-      console.log(`  Repo:                 ${result.repoPath}`);
-      console.log(`  Worktrees scanned:    ${result.scannedWorktrees}`);
-      console.log(`  Merged branches:      ${result.mergedBranches.join(', ') || '(none)'}`);
-      console.log(`  Observations adopted: ${result.adoptedObservations}`);
-      console.log(`  Summaries adopted:    ${result.adoptedSummaries}`);
-      console.log(`  Chroma docs updated:  ${result.chromaUpdates}`);
-      if (result.chromaFailed > 0) {
-        console.log(`  Chroma sync failures: ${result.chromaFailed} (will retry on next run)`);
-      }
-      for (const err of result.errors) {
-        console.log(`  ! ${err.worktree}: ${err.error}`);
-      }
-      process.exit(0);
-    }
-
     case '--daemon':
     default: {
       // GUARD 1: Refuse to start if another worker is already alive (PID check).
@@ -1310,18 +1270,7 @@ async function main() {
       });
 
       const worker = new WorkerService();
-      worker.start().catch(async (error) => {
-        // Port race: when the MCP server and SessionStart hook both spawn a daemon
-        // concurrently, one will lose the bind race with EADDRINUSE or Bun's equivalent
-        // "port in use" error. If the winner is already healthy, exit cleanly (#1447).
-        const isPortConflict = error instanceof Error && (
-          (error as NodeJS.ErrnoException).code === 'EADDRINUSE' ||
-          /port.*in use|address.*in use/i.test(error.message)
-        );
-        if (isPortConflict && await waitForHealth(port, 3000)) {
-          logger.info('SYSTEM', 'Duplicate daemon exiting — another worker already claimed port', { port });
-          process.exit(0);
-        }
+      worker.start().catch((error) => {
         logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
         removePidFile();
         // Exit gracefully: Windows Terminal won't keep tab open on exit 0
