@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [12.2.0-custom] - 2026-04-22
+
+### Fixes (custom — Qdrant migration)
+
+- **SearchManager**: wire `VectorBackend` interface — was still typed as `ChromaSync` and calling
+  `.queryChroma()` which does not exist on `VectorSync`/QdrantClient, causing 400+ SEARCH errors/day
+  after the Chroma→Qdrant migration
+- **VectorSync**: add `translateWhereFilter()` — recursively converts Chroma-style `$and`/`$or`/`$eq`
+  compound filters to Qdrant `must`/`should` format; without this, project-scoped and typed queries
+  were rejected by Qdrant as invalid JSON paths
+
+### Ops (custom)
+
+- **`scripts/claude-mem-health-check.sh`**: add `check_vector_sanity()` — 4-stage Qdrant check:
+  HTTP `/healthz`, collections list (auth), E2E search via worker API (embed→Qdrant→SQLite pipeline),
+  and rolling 30-min `VECTOR_SYNC`/`SEARCH` error count
+
+---
+
 ## [12.2.0] - 2026-04-18
 
 ## Highlights
