@@ -107,11 +107,14 @@ check_worker() {
     return 1
   fi
 
-  # Check version
-  local version
+  # Check version — lê versão esperada do package.json do plugin (fonte de verdade)
+  local version expected_version
   version=$(echo "$version_response" | grep -o '"version":"[^"]*"' | cut -d'"' -f4)
-  if [ -n "$version" ] && [ "$version" != "12.1.0" ]; then
-    WARNINGS+=("$label: Versão inesperada ($version, esperado 12.1.0)")
+  expected_version=$(grep -o '"version": "[^"]*"' \
+    "$HOME/.claude/plugins/marketplaces/thedotmack/plugin/package.json" 2>/dev/null \
+    | grep -o '[0-9][^"]*')
+  if [ -n "$version" ] && [ -n "$expected_version" ] && [ "$version" != "$expected_version" ]; then
+    WARNINGS+=("$label: Versão inesperada ($version, esperado $expected_version)")
     log "WARN $label: version=$version"
   fi
 
@@ -326,13 +329,18 @@ check_vector_sanity() {
   fi
 
   # 3. E2E search via worker — testa pipeline completo: embed → Qdrant → SQLite
+  # Timeout de 45s: FastEmbed (no .253) pode levar 20-30s no cold-start do modelo
   local search_response
-  search_response=$(curl -s --max-time 15 \
+  search_response=$(curl -s --max-time 45 \
     "http://127.0.0.1:37777/api/search?query=vector+sanity+check&limit=1" 2>/dev/null)
   if echo "$search_response" | grep -q '"content"'; then
     log "OK: Vector E2E search OK (worker→embed→Qdrant→SQLite)"
+  elif [ -z "$search_response" ]; then
+    ERRORS+=("Vector E2E: timeout após 45s — FastEmbed/Qdrant não respondeu!")
+    log "ERROR: E2E search timeout (45s) — FastEmbed cold-start ou Qdrant travado"
+    return 1
   else
-    ERRORS+=("Vector E2E: search via worker falhou — pipeline embed→Qdrant quebrado!")
+    ERRORS+=("Vector E2E: resposta inesperada do worker — pipeline com erro!")
     log "ERROR: E2E search returned unexpected: ${search_response:0:150}"
     return 1
   fi
