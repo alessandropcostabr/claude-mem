@@ -15,7 +15,7 @@
 
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
-import { ChromaSync } from '../sync/ChromaSync.js';
+import type { VectorBackend } from '../sync/VectorBackend.js';
 import { FormattingService } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
@@ -39,7 +39,7 @@ export class SearchManager {
   constructor(
     private sessionSearch: SessionSearch,
     private sessionStore: SessionStore,
-    private chromaSync: ChromaSync | null,
+    private chromaSync: VectorBackend | null,
     private formatter: FormattingService,
     private timelineService: TimelineService
   ) {
@@ -53,7 +53,7 @@ export class SearchManager {
   }
 
   /**
-   * Query Chroma vector database via ChromaSync
+   * Query vector database via VectorBackend interface
    * @deprecated Use orchestrator.search() instead
    */
   private async queryChroma(
@@ -64,7 +64,7 @@ export class SearchManager {
     if (!this.chromaSync) {
       return { ids: [], distances: [], metadatas: [] };
     }
-    return await this.chromaSync.queryChroma(query, limit, whereFilter);
+    return await this.chromaSync.queryVector(query, limit, whereFilter);
   }
 
   /**

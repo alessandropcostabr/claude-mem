@@ -373,6 +373,25 @@ export class VectorSync implements VectorBackend {
     await this.addDocuments([doc]);
   }
 
+  /**
+   * Translate a Chroma-style whereFilter ($and/$or/$eq) to Qdrant filter format.
+   * Handles: simple key-value, $and compound, $or compound, $eq value wrapper.
+   */
+  private translateWhereFilter(filter: Record<string, any>): any {
+    if ('$and' in filter) {
+      return { must: (filter.$and as any[]).map(f => this.translateWhereFilter(f)) };
+    }
+    if ('$or' in filter) {
+      return { should: (filter.$or as any[]).map(f => this.translateWhereFilter(f)) };
+    }
+    const conditions = Object.entries(filter).map(([key, value]) => {
+      const matchValue =
+        typeof value === 'object' && value !== null && '$eq' in value ? value.$eq : value;
+      return { key, match: { value: matchValue } };
+    });
+    return conditions.length === 1 ? conditions[0] : { must: conditions };
+  }
+
   async queryVector(
     query: string,
     limit: number,
@@ -384,15 +403,8 @@ export class VectorSync implements VectorBackend {
       // Embed the query
       const [queryVector] = await this.embed([query]);
 
-      // Build Qdrant filter from whereFilter
-      let filter: any = undefined;
-      if (whereFilter) {
-        const must: any[] = [];
-        for (const [key, value] of Object.entries(whereFilter)) {
-          must.push({ key, match: { value } });
-        }
-        if (must.length > 0) filter = { must };
-      }
+      // Build Qdrant filter from whereFilter (supports $and/$or Chroma-style operators)
+      const filter = whereFilter ? this.translateWhereFilter(whereFilter) : undefined;
 
       const results = await this.qdrant.searchPoints(
         this.collectionName,
