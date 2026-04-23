@@ -10,6 +10,7 @@ import { SearchManager } from '../../SearchManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { logger } from '../../../../utils/logger.js';
 import { FeedbackRecorder } from '../../../bandit/FeedbackRecorder.js';
+import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 
 export class SearchRoutes extends BaseRouteHandler {
   constructor(
@@ -311,7 +312,14 @@ export class SearchRoutes extends BaseRouteHandler {
         lines.push('');
       }
 
-      res.json({ context: lines.join('\n'), count: observations.length });
+      const maxTokens = parseInt(SettingsDefaultsManager.get('CLAUDE_MEM_SEMANTIC_MAX_TOKENS')) || 3000;
+      const maxChars = maxTokens * 4;
+      let contextText = lines.join('\n');
+      if (contextText.length > maxChars) {
+        contextText = contextText.slice(0, maxChars) + '\n\n[contexto truncado por CLAUDE_MEM_SEMANTIC_MAX_TOKENS]';
+        logger.debug('SEARCH', `Context truncated: ${contextText.length} chars > ${maxChars} limit`);
+      }
+      res.json({ context: contextText, count: observations.length });
     } catch (error) {
       logger.error('SEARCH', 'Semantic context query failed', {}, error as Error);
       res.json({ context: '', count: 0 });

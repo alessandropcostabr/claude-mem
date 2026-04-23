@@ -119,6 +119,9 @@ check_token "$MCP" "mem_deprecate" "Phase 7 (MCP tools)"
 check_token "$MCP" "mem_stats" "Phase 7 (MCP tools)"
 check_token "$MCP" "save_memory" "Phase 3 (MCP save)"
 
+# Phase 0 Item 6: CLAUDE_MEM_SEMANTIC_MAX_TOKENS
+check_token "$WORKER" "SEMANTIC_MAX_TOKENS" "Phase 0 Item 6 (token limit)"
+
 # Phase 8: HybridScorer
 check_token "$WORKER" "scoreAndRank" "Phase 8 (Scoring)"
 check_token "$WORKER" "computeScore" "Phase 8 (Scoring)"

@@ -62,6 +62,7 @@ export interface SettingsDefaults {
   // Semantic Context Injection (per-prompt via Chroma)
   CLAUDE_MEM_SEMANTIC_INJECT: string;        // 'true' | 'false' - inject relevant observations on each prompt
   CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;  // Max observations to inject per prompt
+  CLAUDE_MEM_SEMANTIC_MAX_TOKENS: string;    // Max tokens for injected semantic context
   // Tier Routing (model selection by queue complexity)
   CLAUDE_MEM_TIER_ROUTING_ENABLED: string;   // 'true' | 'false' - enable model tier routing
   CLAUDE_MEM_TIER_SIMPLE_MODEL: string;      // Tier alias or model ID for simple tool observations (Read, Glob, Grep)
@@ -141,6 +142,7 @@ export class SettingsDefaultsManager {
     // Semantic Context Injection (per-prompt via Chroma vector search)
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
     CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',           // Top-N most relevant observations to inject per prompt
+    CLAUDE_MEM_SEMANTIC_MAX_TOKENS: '3000',          // empirical: avg 108 tok/obs, covers 5×p95
     // Tier Routing (model selection by queue complexity)
     CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',         // Route observations to models by complexity
     CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku', // Portable tier alias — works across Direct API, Bedrock, Vertex, Azure (see #1463)
