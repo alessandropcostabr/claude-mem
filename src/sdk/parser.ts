@@ -132,10 +132,29 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
   const summaryMatch = summaryRegex.exec(text);
 
   if (!summaryMatch) {
-    // Log when the response contains <observation> instead of <summary>
-    // to help diagnose prompt conditioning issues (see #1312)
+    // Fallback: LLM responded with <observation> instead of <summary> (#1312)
+    // Extract content from observation tags and map to summary fields
     if (/<observation>/.test(text)) {
-      logger.warn('PARSER', 'Summary response contained <observation> tags instead of <summary> — prompt conditioning may need strengthening', { sessionId });
+      logger.warn('PARSER', 'Summary response contained <observation> — converting to summary (fallback)', { sessionId });
+      const obsRegex = /<observation>([\s\S]*?)<\/observation>/;
+      const obsMatch = obsRegex.exec(text);
+      if (obsMatch) {
+        const obsContent = obsMatch[1];
+        const title = extractField(obsContent, 'title');
+        const narrative = extractField(obsContent, 'narrative');
+        const facts = obsContent.match(/<fact>([\s\S]*?)<\/fact>/g)?.map(f => f.replace(/<\/?fact>/g, '').trim()).join('; ');
+        if (title || narrative) {
+          logger.info('PARSER', 'Observation→Summary fallback succeeded', { sessionId, hasTitle: !!title, hasNarrative: !!narrative });
+          return {
+            request: title || null,
+            investigated: null,
+            learned: facts || null,
+            completed: narrative || null,
+            next_steps: null,
+            notes: null
+          };
+        }
+      }
     }
     return null;
   }
