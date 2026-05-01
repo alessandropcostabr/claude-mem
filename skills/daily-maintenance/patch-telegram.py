@@ -5,6 +5,7 @@ patch-telegram.py — Reaplicar patches claude-mem no Telegram plugin.
 Patches aplicados:
   1. bot.on('message_reaction') → POST /api/metrics/telegram-reaction
   2. bot.start({ allowed_updates: [..., 'message_reaction'] })
+  3. MCP keepalive: setInterval a cada 3min para evitar idle timeout do claude-patched
 
 Uso:
   python3 patch-telegram.py             # detecta versão ativa automaticamente
@@ -57,6 +58,27 @@ BOT_START_PATCHED = """      await bot.start({
         allowed_updates: ['message', 'callback_query', 'message_reaction'],
         onStart: info => {"""
 
+# Keepalive: anchor (right after mcp.connect)
+MCP_CONNECT_ANCHOR = "await mcp.connect(new StdioServerTransport())\n\n// When Claude Code closes"
+
+# Keepalive: bloco inserido após mcp.connect para evitar idle timeout do claude-patched
+MCP_KEEPALIVE_BLOCK = """await mcp.connect(new StdioServerTransport())
+
+// Keepalive: prevent claude-patched MCP idle timeout (~5min)
+// Escreve notification JSON-RPC de debug a cada 3min para manter stdin ativo.
+setInterval(() => {
+  try {
+    const msg = JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'notifications/message',
+      params: { level: 'debug', logger: 'telegram-keepalive', data: 'ping' }
+    })
+    process.stdout.write(msg + '\\n')
+  } catch {}
+}, 180_000).unref()
+
+// When Claude Code closes"""
+
 
 def get_active_version():
     versions = sorted(CACHE_DIR.iterdir(), key=lambda p: p.name) if CACHE_DIR.exists() else []
@@ -68,6 +90,7 @@ def check_patched(content: str) -> dict:
     return {
         "message_reaction": "message_reaction" in content,
         "allowed_updates": "allowed_updates" in content,
+        "keepalive": "telegram-keepalive" in content,
     }
 
 
@@ -78,6 +101,7 @@ def apply_patch(server_ts: Path, check_only=False) -> bool:
     print(f"  server.ts: {server_ts}")
     print(f"  message_reaction: {'✅ present' if status['message_reaction'] else '❌ missing'}")
     print(f"  allowed_updates:  {'✅ present' if status['allowed_updates'] else '❌ missing'}")
+    print(f"  keepalive:        {'✅ present' if status['keepalive'] else '❌ missing'}")
 
     if all(status.values()):
         print("  → Already fully patched.")
@@ -87,16 +111,22 @@ def apply_patch(server_ts: Path, check_only=False) -> bool:
         print("  → Patch needed (--check mode, not applying).")
         return False
 
-    if STICKER_END not in content:
-        print("  ERROR: sticker block not found — server.ts layout may have changed.")
-        return False
+    if not status['message_reaction'] or not status['allowed_updates']:
+        if STICKER_END not in content:
+            print("  ERROR: sticker block not found — server.ts layout may have changed.")
+            return False
+        if BOT_START_ORIGINAL not in content:
+            print("  ERROR: bot.start block not found — server.ts layout may have changed.")
+            return False
+        content = content.replace(STICKER_END, STICKER_WITH_REACTION)
+        content = content.replace(BOT_START_ORIGINAL, BOT_START_PATCHED)
 
-    if BOT_START_ORIGINAL not in content:
-        print("  ERROR: bot.start block not found — server.ts layout may have changed.")
-        return False
+    if not status['keepalive']:
+        if MCP_CONNECT_ANCHOR not in content:
+            print("  ERROR: mcp.connect anchor not found — server.ts layout may have changed.")
+            return False
+        content = content.replace(MCP_CONNECT_ANCHOR, MCP_KEEPALIVE_BLOCK, 1)
 
-    content = content.replace(STICKER_END, STICKER_WITH_REACTION)
-    content = content.replace(BOT_START_ORIGINAL, BOT_START_PATCHED)
     server_ts.write_text(content)
     print("  → Patch applied successfully.")
     print("  → Restart the bot: pkill -f 'bun.*server.ts' (claude-patched will respawn it)")

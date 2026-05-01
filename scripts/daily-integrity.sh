@@ -72,15 +72,17 @@ check_tg_patch() {
     FAILURES=$((FAILURES + 1))
     return
   fi
-  local has_reaction has_allowed
+  local has_reaction has_allowed has_keepalive
   has_reaction=$(grep -c "message_reaction" "$server_ts" 2>/dev/null || echo 0)
   has_allowed=$(grep -c "allowed_updates" "$server_ts" 2>/dev/null || echo 0)
-  if [ "$has_reaction" -gt 0 ] && [ "$has_allowed" -gt 0 ]; then
-    RESULTS+=("OK|telegram|TG-PATCH|Patch present in server.ts $ver")
+  has_keepalive=$(grep -c "telegram-keepalive" "$server_ts" 2>/dev/null || echo 0)
+  if [ "$has_reaction" -gt 0 ] && [ "$has_allowed" -gt 0 ] && [ "$has_keepalive" -gt 0 ]; then
+    RESULTS+=("OK|telegram|TG-PATCH|Patch present in server.ts $ver (reaction+keepalive)")
   else
     local missing=""
     [ "$has_reaction" -eq 0 ] && missing="message_reaction "
-    [ "$has_allowed" -eq 0 ] && missing="${missing}allowed_updates"
+    [ "$has_allowed" -eq 0 ] && missing="${missing}allowed_updates "
+    [ "$has_keepalive" -eq 0 ] && missing="${missing}keepalive"
     RESULTS+=("FAIL|telegram|TG-PATCH|Missing in server.ts $ver: $missing")
     FAILURES=$((FAILURES + 1))
   fi
