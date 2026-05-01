@@ -176,8 +176,8 @@ check_c4_data() {
   if [ "$count" -gt 0 ]; then
     RESULTS+=("OK|database|C4-DATA|FileReadTracking: $count records last 24h")
   else
-    RESULTS+=("FAIL|database|C4-DATA|FileReadTracking: 0 records last 24h (Phase 4 C4 inactive)")
-    FAILURES=$((FAILURES + 1))
+    RESULTS+=("WARN|database|C4-DATA|FileReadTracking: 0 records last 24h (no session today, or Phase 4 C4 inactive)")
+    WARNINGS=$((WARNINGS + 1))
   fi
 }
 
