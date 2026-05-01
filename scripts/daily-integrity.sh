@@ -73,9 +73,9 @@ check_tg_patch() {
     return
   fi
   local has_reaction has_allowed has_keepalive
-  has_reaction=$(grep -c "message_reaction" "$server_ts" 2>/dev/null || echo 0)
-  has_allowed=$(grep -c "allowed_updates" "$server_ts" 2>/dev/null || echo 0)
-  has_keepalive=$(grep -c "telegram-keepalive" "$server_ts" 2>/dev/null || echo 0)
+  has_reaction=$(grep -c "message_reaction" "$server_ts" 2>/dev/null || true)
+  has_allowed=$(grep -c "allowed_updates" "$server_ts" 2>/dev/null || true)
+  has_keepalive=$(grep -c "telegram-keepalive" "$server_ts" 2>/dev/null || true)
   if [ "$has_reaction" -gt 0 ] && [ "$has_allowed" -gt 0 ] && [ "$has_keepalive" -gt 0 ]; then
     RESULTS+=("OK|telegram|TG-PATCH|Patch present in server.ts $ver (reaction+keepalive)")
   else
@@ -182,8 +182,9 @@ check_c4_data() {
 }
 
 check_journal() {
-  # Serviços/eventos ignorados: GUI, mnt temporários, coredumps de bun, sudo auth, SSH scans
-  local ignore_pattern="gnome-terminal-server|xdg-desktop-portal-gtk|mnt-backup.mount|colord|gvfs-|accounts-daemon|systemd-coredump|pam_unix|sudo|sshd.*preauth"
+  # Serviços/eventos ignorados: GUI, mnt temporários, coredumps de bun, sudo auth, SSH scans,
+  # hardware ThinkPad (ACPI/VMX/battery), rclone gdrive (transient no reboot)
+  local ignore_pattern="gnome-terminal-server|xdg-desktop-portal-gtk|mnt-backup.mount|colord|gvfs-|accounts-daemon|systemd-coredump|pam_unix|sudo|sshd.*preauth|thinkpad_acpi|ThinkPad Battery|ACPI.*HKEY|ACPI.*battery|VMX.*BIOS|rclone|fusermount|home\.mount"
   local JOURNAL_FAIL_THRESHOLD=5
   local errors
   errors=$(journalctl --since "24 hours ago" --priority=err --no-pager -q 2>/dev/null \
