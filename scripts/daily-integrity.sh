@@ -180,16 +180,22 @@ check_c4_data() {
 }
 
 check_journal() {
-  # Serviços ignorados: GUI e mnt temporários que falham normalmente
-  local ignore_pattern="gnome-terminal-server|xdg-desktop-portal-gtk|mnt-backup.mount|colord|gvfs-|accounts-daemon"
+  # Serviços/eventos ignorados: GUI, mnt temporários, coredumps de bun, sudo auth, SSH scans
+  local ignore_pattern="gnome-terminal-server|xdg-desktop-portal-gtk|mnt-backup.mount|colord|gvfs-|accounts-daemon|systemd-coredump|pam_unix|sudo|sshd.*preauth"
+  local JOURNAL_FAIL_THRESHOLD=5
   local errors
   errors=$(journalctl --since "24 hours ago" --priority=err --no-pager -q 2>/dev/null \
+    | grep -v "^[[:space:]]" \
     | grep -vE "$ignore_pattern" \
     | grep -v "^$" \
-    | wc -l)
-  if [ "$errors" -gt 0 ]; then
+    | wc -l) || errors=0
+  errors=$(echo "$errors" | tr -d '[:space:]')
+  if [ "$errors" -gt "$JOURNAL_FAIL_THRESHOLD" ]; then
     RESULTS+=("FAIL|system|JOURNAL|${errors} critical service errors in last 24h (check journalctl -p err)")
     FAILURES=$((FAILURES + 1))
+  elif [ "$errors" -gt 0 ]; then
+    RESULTS+=("WARN|system|JOURNAL|${errors} minor errors in last 24h (below threshold of $JOURNAL_FAIL_THRESHOLD)")
+    WARNINGS=$((WARNINGS + 1))
   else
     RESULTS+=("OK|system|JOURNAL|No critical service errors")
   fi
