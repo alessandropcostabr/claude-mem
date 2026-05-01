@@ -208,6 +208,22 @@ function formatFileTimeline(
   return lines.join('\n');
 }
 
+/** Fire-and-forget C4 metric — never delays or fails the hook. */
+function trackFileRead(
+  sessionId: string,
+  filePath: string,
+  hasObservations: boolean,
+  observationCount: number,
+  action: string,
+  fileSizeBytes?: number
+): void {
+  workerHttpRequest('/api/metrics/file-read', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, filePath, hasObservations, observationCount, action, fileSizeBytes }),
+  }).catch(() => {});
+}
+
 export const fileContextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     // Extract file_path from toolInput
@@ -228,6 +244,7 @@ export const fileContextHandler: EventHandler = {
     // Stat the file once: size (gate) + mtime (cache invalidation).
     // 0 = stat failed non-fatally (e.g. EPERM) — skip mtime check, fall through to truncation.
     let fileMtimeMs = 0;
+    let fileSizeBytes: number | undefined;
     try {
       const statPath = path.isAbsolute(filePath)
         ? filePath
@@ -239,6 +256,7 @@ export const fileContextHandler: EventHandler = {
         return { continue: true, suppressOutput: true };
       }
       fileMtimeMs = stat.mtimeMs;
+      fileSizeBytes = stat.size;
     } catch (err: any) {
       if (err.code === 'ENOENT') return { continue: true, suppressOutput: true };
       // Other errors (symlink, permission denied) — fall through and let gate proceed
@@ -283,6 +301,7 @@ export const fileContextHandler: EventHandler = {
       const data = await response.json() as { observations: ObservationRow[]; count: number };
 
       if (!data.observations || data.observations.length === 0) {
+        trackFileRead(input.sessionId, relativePath, false, 0, 'read', fileSizeBytes);
         return { continue: true, suppressOutput: true };
       }
 
@@ -296,6 +315,7 @@ export const fileContextHandler: EventHandler = {
             fileMtimeMs,
             newestObservationMs,
           });
+          trackFileRead(input.sessionId, relativePath, true, data.observations.length, 'read', fileSizeBytes);
           return { continue: true, suppressOutput: true };
         }
       }
@@ -303,6 +323,7 @@ export const fileContextHandler: EventHandler = {
       // Deduplicate: one per session, ranked by specificity to this file
       const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
       if (dedupedObservations.length === 0) {
+        trackFileRead(input.sessionId, relativePath, true, data.observations.length, 'read', fileSizeBytes);
         return { continue: true, suppressOutput: true };
       }
 
@@ -316,6 +337,9 @@ export const fileContextHandler: EventHandler = {
       } else {
         updatedInput.limit = 1;
       }
+
+      // C4: record that the PreToolUse hook injected an observation timeline
+      trackFileRead(input.sessionId, relativePath, true, dedupedObservations.length, 'auto_enriched', fileSizeBytes);
 
       return {
         hookSpecificOutput: {

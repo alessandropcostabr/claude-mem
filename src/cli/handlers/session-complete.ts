@@ -31,8 +31,11 @@ export const sessionCompleteHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
+    const reason = typeof input.metadata?.reason === 'string' ? input.metadata.reason : undefined;
+
     logger.info('HOOK', '→ session-complete: Removing session from active map', {
-      contentSessionId: sessionId
+      contentSessionId: sessionId,
+      reason
     });
 
     try {
@@ -42,7 +45,8 @@ export const sessionCompleteHandler: EventHandler = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contentSessionId: sessionId,
-          platformSource
+          platformSource,
+          reason
         })
       });
 

@@ -5,6 +5,10 @@ import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.
 export const claudeCodeAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
+    const metadata: Record<string, unknown> = {};
+    if (r.reason) metadata.reason = r.reason;       // SessionEnd: exit|clear|logout|...
+    if (r.source) metadata.source = r.source;       // SessionStart: startup|resume|clear
+    if (r.trigger) metadata.trigger = r.trigger;   // PreCompress: auto|manual
     return {
       sessionId: r.session_id ?? r.id ?? r.sessionId,
       cwd: r.cwd ?? process.cwd(),
@@ -13,6 +17,7 @@ export const claudeCodeAdapter: PlatformAdapter = {
       toolInput: r.tool_input,
       toolResponse: r.tool_response,
       transcriptPath: r.transcript_path,
+      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
     };
   },
   formatOutput(result) {

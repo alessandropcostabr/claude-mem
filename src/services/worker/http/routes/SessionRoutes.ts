@@ -690,8 +690,9 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleCompleteByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId } = req.body;
     const platformSource = normalizePlatformSource(req.body.platformSource);
+    const reason = typeof req.body.reason === 'string' ? req.body.reason : undefined;
 
-    logger.info('HTTP', '→ POST /api/sessions/complete', { contentSessionId });
+    logger.info('HTTP', '→ POST /api/sessions/complete', { contentSessionId, reason });
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId');
@@ -714,14 +715,22 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
+    // When reason is 'clear', the user is clearing context — not ending their work session.
+    // We must NOT abort the generator or drain pending observations, as those represent
+    // real work done before /clear and should still be processed and saved.
+    // Fix: port of upstream v12.4.4 — SessionEnd must not drain queue on /clear.
+    const abortGenerator = reason !== 'clear';
+
     // Complete the session (removes from active sessions map if present)
     // Note: The Stop hook (summarize handler) waits for pending work before calling
     // this endpoint. No polling here — that's the hook's responsibility.
-    await this.completionHandler.completeByDbId(sessionDbId);
+    await this.completionHandler.completeByDbId(sessionDbId, { abortGenerator });
 
     logger.info('SESSION', 'Session completed via API', {
       contentSessionId,
-      sessionDbId
+      sessionDbId,
+      reason,
+      abortGenerator
     });
 
     res.json({ status: activeSession ? 'completed' : 'completed_db_only', sessionDbId });
