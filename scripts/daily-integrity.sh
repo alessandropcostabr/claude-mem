@@ -75,7 +75,7 @@ check_tg_patch() {
   local has_reaction has_allowed has_keepalive
   has_reaction=$(grep -c "message_reaction" "$server_ts" 2>/dev/null || true)
   has_allowed=$(grep -c "allowed_updates" "$server_ts" 2>/dev/null || true)
-  has_keepalive=$(grep -c "telegram-keepalive" "$server_ts" 2>/dev/null || true)
+  has_keepalive=$(grep -cE "telegram-keepalive|mcp\.ping\(\)" "$server_ts" 2>/dev/null || true)
   if [ "$has_reaction" -gt 0 ] && [ "$has_allowed" -gt 0 ] && [ "$has_keepalive" -gt 0 ]; then
     RESULTS+=("OK|telegram|TG-PATCH|Patch present in server.ts $ver (reaction+keepalive)")
   else

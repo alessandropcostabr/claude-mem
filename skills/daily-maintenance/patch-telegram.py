@@ -90,7 +90,7 @@ def check_patched(content: str) -> dict:
     return {
         "message_reaction": "message_reaction" in content,
         "allowed_updates": "allowed_updates" in content,
-        "keepalive": "telegram-keepalive" in content,
+        "keepalive": "telegram-keepalive" in content or "mcp.ping()" in content,
     }
 
 
