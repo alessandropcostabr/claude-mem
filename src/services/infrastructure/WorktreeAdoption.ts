@@ -1,34 +1,13 @@
-/**
- * WorktreeAdoption - Stamp observations from merged worktrees into their parent project.
- *
- * Given a parent repo path, this engine:
- *   1. Uses git to enumerate worktrees of the parent repo.
- *   2. Classifies each worktree's branch as "merged" (in `git branch --merged HEAD`)
- *      or manually overridden via `onlyBranch` (for squash-merge detection).
- *   3. Stamps `merged_into_project` on `observations` and `session_summaries` rows
- *      whose `project` matches the composite `parent/worktree` name.
- *   4. Propagates the same metadata to Chroma so semantic search includes the
- *      adopted rows under the parent project.
- *
- * `project` is never overwritten — it remains immutable provenance. The
- * `merged_into_project` column is a virtual pointer that query layers OR into
- * their WHERE predicates.
- *
- * DB lifecycle mirrors `runOneTimeCwdRemap` in ProcessManager.ts: we manage our
- * own Database handle (open -> transaction -> close in finally) so this engine
- * can be called on worker startup before `dbManager.initialize()` without
- * contending on the shared handle.
- */
 
 import path from 'path';
-import { homedir } from 'os';
 import { existsSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
+import { paths } from '../../shared/paths.js';
 
-const DEFAULT_DATA_DIR = path.join(homedir(), '.claude-mem');
+const DEFAULT_DATA_DIR = paths.dataDir();
 
 export interface AdoptionResult {
   repoPath: string;
@@ -48,7 +27,7 @@ interface WorktreeEntry {
   branch: string | null;
 }
 
-const GIT_TIMEOUT_MS = 5000;
+const GIT_TIMEOUT_MS = 15000;
 
 class DryRunRollback extends Error {
   constructor() {
@@ -58,18 +37,34 @@ class DryRunRollback extends Error {
 }
 
 function gitCapture(cwd: string, args: string[]): string | null {
+  const startTime = Date.now();
   const r = spawnSync('git', ['-C', cwd, ...args], {
     encoding: 'utf8',
     timeout: GIT_TIMEOUT_MS
   });
-  if (r.status !== 0) return null;
+  const duration = Date.now() - startTime;
+  
+  if (duration > 1000) {
+    logger.debug('GIT', `Slow git operation: git -C ${cwd} ${args.join(' ')} took ${duration}ms`);
+  }
+
+  if (r.error) {
+    logger.warn('GIT', `Git operation failed: git -C ${cwd} ${args.join(' ')}`, {
+      error: r.error.message,
+      timedOut: r.error.name === 'ETIMEDOUT' || (r.status === null && r.signal === 'SIGTERM')
+    });
+    return null;
+  }
+
+  if (r.status !== 0) {
+    logger.debug('GIT', `Git returned non-zero exit code ${r.status}: git -C ${cwd} ${args.join(' ')}`, {
+      stderr: r.stderr?.toString().trim()
+    });
+    return null;
+  }
   return (r.stdout ?? '').trim();
 }
 
-/**
- * Resolve the main working-tree root for an arbitrary cwd inside a repo or worktree.
- * Mirrors the handling in `scripts/cwd-remap.ts:48-51`.
- */
 function resolveMainRepoPath(cwd: string): string | null {
   const commonDir = gitCapture(cwd, [
     'rev-parse',
@@ -78,7 +73,6 @@ function resolveMainRepoPath(cwd: string): string | null {
   ]);
   if (!commonDir) return null;
 
-  // Normal: common-dir is "<repo>/.git". Bare: strip the trailing ".git".
   const mainRoot = commonDir.endsWith('/.git')
     ? path.dirname(commonDir)
     : commonDir.replace(/\.git$/, '');
@@ -96,7 +90,6 @@ function listWorktrees(mainRepo: string): WorktreeEntry[] {
       if (current.path) entries.push({ path: current.path, branch: current.branch ?? null });
       current = { path: line.slice('worktree '.length).trim(), branch: null };
     } else if (line.startsWith('branch ')) {
-      // `branch refs/heads/<name>` — strip the ref prefix.
       const refName = line.slice('branch '.length).trim();
       current.branch = refName.startsWith('refs/heads/')
         ? refName.slice('refs/heads/'.length)
@@ -123,22 +116,6 @@ function listMergedBranches(mainRepo: string): Set<string> {
   );
 }
 
-/**
- * Stamp `merged_into_project` on observations and session_summaries for every
- * worktree of `opts.repoPath` whose branch has been merged into the parent's HEAD.
- *
- * SQL writes are idempotent: an UPDATE only touches rows where
- * `merged_into_project IS NULL`. `result.adoptedObservations` / `adoptedSummaries`
- * reflect the actual SQL changes on each run.
- *
- * Chroma patches are self-healing: the Chroma id set is built from ALL
- * observations whose `project` matches a merged worktree (both unadopted rows
- * AND rows previously stamped to this parent), and `updateMergedIntoProject`
- * is idempotent, so a transient Chroma failure on an earlier run is retried
- * automatically on the next adoption pass. `result.chromaUpdates` therefore
- * counts the total Chroma writes performed this pass (which may exceed
- * `adoptedObservations` when retries happen).
- */
 export async function adoptMergedWorktrees(opts: {
   repoPath?: string;
   dataDirectory?: string;
@@ -207,11 +184,6 @@ export async function adoptMergedWorktrees(opts: {
     const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
     db = new Database(dbPath);
 
-    // Schema guard: adoption may be invoked on worker startup before
-    // DatabaseManager runs migrations. If the `merged_into_project` column
-    // isn't present yet, prepared statements below will fail with
-    // "no such column", silently skipping adoption until the next restart.
-    // Return early so the next boot (post-migration) picks this up.
     interface ColumnInfo { name: string }
     const obsColumns = db
       .prepare('PRAGMA table_info(observations)')
@@ -230,12 +202,6 @@ export async function adoptMergedWorktrees(opts: {
       return result;
     }
 
-    // Select ALL observations for the worktree project (both unadopted rows
-    // AND rows already stamped to this parent), not just unadopted ones. This
-    // ensures a transient Chroma failure on a prior run gets retried the next
-    // time adoption executes: SQL may already be stamped, but we re-include
-    // those ids in the Chroma patch set (updateMergedIntoProject is idempotent
-    // — it replays the same metadata write).
     const selectObsForPatch = db.prepare(
       `SELECT id FROM observations
        WHERE project = ?
@@ -248,22 +214,24 @@ export async function adoptMergedWorktrees(opts: {
       'UPDATE session_summaries SET merged_into_project = ? WHERE project = ? AND merged_into_project IS NULL'
     );
 
+    const adoptWorktreeInTransaction = (wt: WorktreeEntry) => {
+      const worktreeProject = getProjectContext(wt.path).primary;
+      const rows = selectObsForPatch.all(
+        worktreeProject,
+        parentProject
+      ) as Array<{ id: number }>;
+
+      const obsChanges = updateObs.run(parentProject, worktreeProject).changes;
+      const sumChanges = updateSum.run(parentProject, worktreeProject).changes;
+      for (const r of rows) adoptedSqliteIds.push(r.id);
+      result.adoptedObservations += obsChanges;
+      result.adoptedSummaries += sumChanges;
+    };
+
     const tx = db.transaction(() => {
       for (const wt of targets) {
         try {
-          const worktreeProject = getProjectContext(wt.path).primary;
-          const rows = selectObsForPatch.all(
-            worktreeProject,
-            parentProject
-          ) as Array<{ id: number }>;
-          for (const r of rows) adoptedSqliteIds.push(r.id);
-
-          // updateObs/updateSum only touch WHERE merged_into_project IS NULL,
-          // so .changes reflects only newly-adopted rows (not the re-patched ones).
-          const obsChanges = updateObs.run(parentProject, worktreeProject).changes;
-          const sumChanges = updateSum.run(parentProject, worktreeProject).changes;
-          result.adoptedObservations += obsChanges;
-          result.adoptedSummaries += sumChanges;
+          adoptWorktreeInTransaction(wt);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           logger.warn('SYSTEM', 'Worktree adoption skipped branch', {
@@ -275,7 +243,6 @@ export async function adoptMergedWorktrees(opts: {
         }
       }
       if (dryRun) {
-        // Throw a dedicated error to force rollback. Caught below by instanceof check.
         throw new DryRunRollback();
       }
     });
@@ -285,7 +252,11 @@ export async function adoptMergedWorktrees(opts: {
     } catch (err) {
       if (err instanceof DryRunRollback) {
         // Rolled back as intended for dry-run — counts are still useful.
+      } else if (err instanceof Error) {
+        logger.error('SYSTEM', 'Worktree adoption transaction failed', {}, err);
+        throw err;
       } else {
+        logger.error('SYSTEM', 'Worktree adoption transaction failed with non-Error', { error: String(err) });
         throw err;
       }
     }
@@ -299,12 +270,20 @@ export async function adoptMergedWorktrees(opts: {
       await chromaSync.updateMergedIntoProject(adoptedSqliteIds, parentProject);
       result.chromaUpdates = adoptedSqliteIds.length;
     } catch (err) {
-      logger.error(
-        'CHROMA_SYNC',
-        'Worktree adoption Chroma patch failed (SQL already committed)',
-        { parentProject, sqliteIdCount: adoptedSqliteIds.length },
-        err as Error
-      );
+      if (err instanceof Error) {
+        logger.error(
+          'SYSTEM',
+          'Worktree adoption Chroma patch failed (SQL already committed)',
+          { parentProject, sqliteIdCount: adoptedSqliteIds.length },
+          err
+        );
+      } else {
+        logger.error(
+          'SYSTEM',
+          'Worktree adoption Chroma patch failed (SQL already committed)',
+          { parentProject, sqliteIdCount: adoptedSqliteIds.length, error: String(err) }
+        );
+      }
       result.chromaFailed = adoptedSqliteIds.length;
     } finally {
       await chromaSync.close();
@@ -333,20 +312,6 @@ export async function adoptMergedWorktrees(opts: {
   return result;
 }
 
-/**
- * Run adoption once per distinct parent repo referenced by recorded cwds.
- *
- * Worker startup adoption cannot use `process.cwd()` as a seed — the daemon is
- * spawned with cwd=marketplace-plugin-dir, which isn't a git repo. Instead, we
- * derive candidate parent repos from `pending_messages.cwd` (the user's actual
- * working directories), dedupe via `resolveMainRepoPath`, and run adoption
- * against each. Failures on individual repos are logged but don't short-circuit
- * the others.
- *
- * Safe to call before `dbManager.initialize()`: opens its own short-lived DB
- * handle (readonly) to enumerate cwds, then delegates to `adoptMergedWorktrees`
- * which opens its own writable handle.
- */
 export async function adoptMergedWorktreesForAllKnownRepos(opts: {
   dataDirectory?: string;
   dryRun?: boolean;
