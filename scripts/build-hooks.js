@@ -148,7 +148,15 @@ async function buildHooks() {
         'cohere-ai',
         'ollama',
         '@chroma-core/default-embed',
-        'onnxruntime-node'
+        'onnxruntime-node',
+        'bullmq',
+        'ioredis',
+        'pg',
+        'better-auth',
+        'better-auth/node',
+        'better-auth/plugins',
+        '@better-auth/api-key',
+        'shell-quote'
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
@@ -187,6 +195,13 @@ async function buildHooks() {
       external: [
         'bun:sqlite',
         'zod',
+        'bullmq',
+        'ioredis',
+        'pg',
+        'better-auth',
+        'better-auth/node',
+        'better-auth/plugins',
+        '@better-auth/api-key',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
@@ -323,6 +338,13 @@ async function buildHooks() {
         'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
         'buffer', 'querystring', 'readline', 'tty', 'assert',
         'bun:sqlite',
+        'pg',
+        'bullmq',
+        'ioredis',
+        'better-auth',
+        'better-auth/node',
+        'better-auth/plugins',
+        '@better-auth/api-key',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
