@@ -13,6 +13,8 @@ import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
+import { BanditEngine } from './bandit/BanditEngine.js';
+import { FeedbackRecorder } from './bandit/FeedbackRecorder.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
@@ -138,6 +140,8 @@ export class WorkerService implements WorkerRef {
   private searchRoutes: SearchRoutes | null = null;
 
   private chromaMcpManager: ChromaMcpManager | null = null;
+  private banditEngine: BanditEngine | null = null;
+  private feedbackRecorder: FeedbackRecorder | null = null;
   private transcriptWatcher: TranscriptWatcher | null = null;
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
@@ -366,6 +370,46 @@ export class WorkerService implements WorkerRef {
 
       runOneTimeV12_4_3Cleanup();
 
+      // Initialize Bandit Engine for Thompson Sampling optimization
+      try {
+        const sessionStore = this.dbManager.getSessionStore();
+        const db = sessionStore.db;
+        if (db) {
+          this.banditEngine = new BanditEngine();
+          this.banditEngine.init(db);
+
+          const settings = SettingsDefaultsManager.loadFromFile(
+            path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json')
+          );
+          this.banditEngine.setConfig({
+            enabled: settings.CLAUDE_MEM_BANDIT_ENABLED === 'true',
+            candidateModels: (settings.CLAUDE_MEM_BANDIT_CANDIDATE_MODELS || '').split(',').map((s: string) => s.trim()).filter(Boolean),
+            minPullsBeforeExploit: parseInt(settings.CLAUDE_MEM_BANDIT_MIN_PULLS_BEFORE_EXPLOIT || '3', 10),
+            logSelections: settings.CLAUDE_MEM_BANDIT_LOG_SELECTIONS !== 'false',
+          });
+
+          this.banditEngine.registerExperiment({
+            id: 'model-per-obs-type',
+            description: 'Select best model per observation type via Thompson Sampling',
+            rewardSignals: ['semantic_inject_hit', 'search_accessed'],
+            createdAt: Date.now()
+          });
+
+          this.feedbackRecorder = new FeedbackRecorder(db, this.banditEngine);
+
+          if (this.sessionRoutes) {
+            this.sessionRoutes.setBanditEngine(this.banditEngine);
+          }
+
+          logger.info('WORKER', 'BanditEngine initialized', {
+            enabled: settings.CLAUDE_MEM_BANDIT_ENABLED === 'true',
+            candidates: settings.CLAUDE_MEM_BANDIT_CANDIDATE_MODELS || '(none)'
+          });
+        }
+      } catch (banditError) {
+        logger.warn('WORKER', 'BanditEngine initialization failed (non-fatal)', {}, banditError as Error);
+      }
+
       logger.info('WORKER', 'Initializing search services...');
       const formattingService = new FormattingService();
       const timelineService = new TimelineService();
@@ -376,7 +420,7 @@ export class WorkerService implements WorkerRef {
         formattingService,
         timelineService
       );
-      this.searchRoutes = new SearchRoutes(searchManager);
+      this.searchRoutes = new SearchRoutes(searchManager, this.feedbackRecorder ?? undefined);
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 

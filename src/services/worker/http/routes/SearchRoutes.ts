@@ -12,6 +12,7 @@ import { countObservationsByProjects } from '../../../context/ObservationCompile
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
+import { FeedbackRecorder } from '../../../bandit/FeedbackRecorder.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
@@ -94,7 +95,8 @@ const semanticContextSchema = z.object({
 
 export class SearchRoutes extends BaseRouteHandler {
   constructor(
-    private searchManager: SearchManager
+    private searchManager: SearchManager,
+    private feedbackRecorder?: FeedbackRecorder
   ) {
     super();
   }
@@ -126,6 +128,13 @@ export class SearchRoutes extends BaseRouteHandler {
 
   private handleUnifiedSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.search(req.query);
+    if (this.feedbackRecorder) {
+      const observations = (result as any)?.observations || [];
+      const obsIds = observations.map((o: any) => o.id).filter((id: any) => typeof id === 'number');
+      if (obsIds.length > 0) {
+        this.feedbackRecorder.recordFeedback(obsIds, 'search_accessed', 'search');
+      }
+    }
     res.json(result);
   });
 
@@ -412,6 +421,14 @@ export class SearchRoutes extends BaseRouteHandler {
     if (!observations.length) {
       res.json({ context: '', count: 0 });
       return;
+    }
+
+    // Record semantic injection feedback
+    if (this.feedbackRecorder && observations.length > 0) {
+      const obsIds = observations.slice(0, limit).map((o: any) => o.id).filter((id: any) => typeof id === 'number');
+      if (obsIds.length > 0) {
+        this.feedbackRecorder.recordFeedback(obsIds, 'semantic_inject_hit', 'semantic_inject');
+      }
     }
 
     const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
