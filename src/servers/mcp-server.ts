@@ -1,21 +1,9 @@
-/**
- * Claude-mem MCP Search Server - Thin HTTP Wrapper
- *
- * Refactored from 2,718 lines to ~600-800 lines
- * Delegates all business logic to Worker HTTP API at localhost:37777
- * Maintains MCP protocol handling and tool schemas
- */
 
-// Version injected at build time by esbuild define
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
-// Import logger first
 import { logger } from '../utils/logger.js';
 
-// CRITICAL: Redirect console to stderr BEFORE other imports
-// MCP uses stdio transport where stdout is reserved for JSON-RPC protocol messages.
-// Any logs to stdout break the protocol (Claude Desktop parses "[2025..." as JSON array).
 console['log'] = (...args: any[]) => {
   logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)', undefined, { args });
 };
@@ -33,54 +21,37 @@ import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-fil
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import {
+  ServerBetaClient,
+  ServerBetaClientError,
+  isServerBetaClientError,
+  type ServerBetaAddObservationRequest,
+  type ServerBetaContextObservationsRequest,
+  type ServerBetaRecordEventRequest,
+  type ServerBetaSearchObservationsRequest,
+} from '../services/hooks/server-beta-client.js';
+import {
+  selectRuntime,
+  buildServerBetaContext,
+  type SelectedRuntime,
+  type ServerBetaRuntimeContext,
+} from '../services/hooks/runtime-selector.js';
 
-// Resolve the path to worker-service.cjs, which lives alongside mcp-server.cjs
-// in the plugin's scripts directory. We need an explicit path because the MCP
-// server runs under Node while the worker must run under Bun, so we can't rely
-// on `__filename` pointing to a self-spawnable script.
-//
-// In the deployed CJS bundle, `__dirname` is always defined — the import.meta
-// fallback only exists to keep the source future-proof against an eventual
-// ESM port. Both fallback branches should be functionally unreachable today.
 let mcpServerDirResolutionFailed = false;
 const mcpServerDir = (() => {
   if (typeof __dirname !== 'undefined') return __dirname;
   try {
     return dirname(fileURLToPath(import.meta.url));
   } catch {
-    // Last-ditch fallback: cwd is almost certainly wrong, but throwing here
-    // would crash the MCP server before it can serve a single request. Mark
-    // the failure so the existence check below can produce a single, loud,
-    // root-cause-attributing log line instead of a confusing "missing worker
-    // bundle" warning that hides the dirname resolution failure.
     mcpServerDirResolutionFailed = true;
     return process.cwd();
   }
 })();
 const WORKER_SCRIPT_PATH = resolve(mcpServerDir, 'worker-service.cjs');
 
-/**
- * Surface a clear, actionable error if the worker bundle isn't where we
- * expect. Without this check, a missing or partial install only fails later
- * inside spawnDaemon as a generic "failed to spawn" message.
- *
- * If dirname resolution itself failed (extremely unlikely in CJS), attribute
- * the missing-bundle warning to the root cause so the user doesn't waste time
- * looking for an install bug that doesn't exist.
- *
- * Called lazily from `ensureWorkerConnection` (not at module load) so that
- * tests or tools that import this module without booting the MCP server
- * don't see noisy ERROR-level log lines for a worker they never intended
- * to start. The check is cheap and idempotent, so calling it on every
- * auto-start attempt is fine.
- */
 function errorIfWorkerScriptMissing(): void {
-  // Only log here when the dirname resolution itself failed — that's the
-  // mcp-server-specific root cause attribution that the spawner cannot
-  // provide. The plain "missing bundle" case is already covered by the
-  // existsSync guard inside ensureWorkerStarted, and logging from both
-  // sites would produce a confusing double-log on the same code path.
   if (!mcpServerDirResolutionFailed) return;
   if (existsSync(WORKER_SCRIPT_PATH)) return;
 
@@ -91,34 +62,28 @@ function errorIfWorkerScriptMissing(): void {
   );
 }
 
-/**
- * Map tool names to Worker HTTP endpoints
- */
 const TOOL_ENDPOINT_MAP: Record<string, string> = {
   'search': '/api/search',
   'timeline': '/api/timeline'
 };
 
-/**
- * Call Worker HTTP API endpoint (uses socket or TCP automatically)
- */
 async function callWorkerAPI(
   endpoint: string,
   params: Record<string, any>
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint, params });
 
-  try {
-    const searchParams = new URLSearchParams();
+  const searchParams = new URLSearchParams();
 
-    // Convert params to query string
-    for (const [key, value] of Object.entries(params)) {
-      if (value !== undefined && value !== null) {
-        searchParams.append(key, String(value));
-      }
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null) {
+      searchParams.append(key, String(value));
     }
+  }
 
-    const apiPath = `${endpoint}?${searchParams}`;
+  const apiPath = `${endpoint}?${searchParams}`;
+
+  try {
     const response = await workerHttpRequest(apiPath);
 
     if (!response.ok) {
@@ -130,10 +95,9 @@ async function callWorkerAPI(
 
     logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
 
-    // Worker returns { content: [...] } format directly
     return data;
-  } catch (error) {
-    logger.error('SYSTEM', '← Worker API error', { endpoint }, error as Error);
+  } catch (error: unknown) {
+    logger.error('SYSTEM', '← Worker API error', { endpoint }, error instanceof Error ? error : new Error(String(error)));
     return {
       content: [{
         type: 'text' as const,
@@ -144,9 +108,33 @@ async function callWorkerAPI(
   }
 }
 
-/**
- * Call Worker HTTP API with POST body
- */
+async function executeWorkerPostRequest(
+  endpoint: string,
+  body: Record<string, any>
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  const response = await workerHttpRequest(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Worker API error (${response.status}): ${errorText}`);
+  }
+
+  const data = await response.json();
+
+  logger.debug('HTTP', 'Worker API success (POST)', undefined, { endpoint });
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify(data, null, 2)
+    }]
+  };
+}
+
 async function callWorkerAPIPost(
   endpoint: string,
   body: Record<string, any>
@@ -154,30 +142,9 @@ async function callWorkerAPIPost(
   logger.debug('HTTP', 'Worker API request (POST)', undefined, { endpoint });
 
   try {
-    const response = await workerHttpRequest(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Worker API error (${response.status}): ${errorText}`);
-    }
-
-    const data = await response.json();
-
-    logger.debug('HTTP', 'Worker API success (POST)', undefined, { endpoint });
-
-    // Wrap raw data in MCP format
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify(data, null, 2)
-      }]
-    };
-  } catch (error) {
-    logger.error('HTTP', 'Worker API error (POST)', { endpoint }, error as Error);
+    return await executeWorkerPostRequest(endpoint, body);
+  } catch (error: unknown) {
+    logger.error('HTTP', 'Worker API error (POST)', { endpoint }, error instanceof Error ? error : new Error(String(error)));
     return {
       content: [{
         type: 'text' as const,
@@ -188,68 +155,242 @@ async function callWorkerAPIPost(
   }
 }
 
-/**
- * Call Worker HTTP API with GET (no params)
- */
-async function callWorkerAPIGet(
-  endpoint: string
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  try {
-    const response = await workerHttpRequest(endpoint);
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Worker API error (${response.status}): ${errorText}`);
-    }
-    const data = await response.json();
-    return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
-  } catch (error) {
-    return {
-      content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
-      isError: true
-    };
-  }
-}
-
-/**
- * Call Worker HTTP API with PATCH (no body)
- */
-async function callWorkerAPIPatch(
-  endpoint: string
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  try {
-    const response = await workerHttpRequest(endpoint, { method: 'PATCH' });
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Worker API error (${response.status}): ${errorText}`);
-    }
-    const data = await response.json();
-    return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
-  } catch (error) {
-    return {
-      content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
-      isError: true
-    };
-  }
-}
-
-/**
- * Verify Worker is accessible
- */
 async function verifyWorkerConnection(): Promise<boolean> {
   try {
     const response = await workerHttpRequest('/api/health');
     return response.ok;
-  } catch (error) {
-    // Expected during worker startup or if worker is down
-    logger.debug('SYSTEM', 'Worker health check failed', {}, error as Error);
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Worker health check failed', {}, error instanceof Error ? error : new Error(String(error)));
     return false;
   }
 }
 
-/**
- * Ensure Worker is available for Codex and other MCP-only clients.
- * Claude hooks already start the worker; this path makes Codex turnkey.
- */
+// Phase 8 — runtime selection for MCP tools.
+// In server-beta mode, observation_* tools talk to the server-beta `/v1`
+// endpoints via the SAME ServerBetaClient hooks use. This guarantees we
+// share the REST core for writes and searches; we never duplicate the
+// event-insert + outbox + enqueue logic on the MCP side.
+//
+// We deliberately resolve the runtime per-call (cheap; reads cached
+// settings) so the user can flip CLAUDE_MEM_RUNTIME without restarting
+// the MCP server.
+type ServerBetaToolContext = ServerBetaRuntimeContext;
+
+interface ServerBetaUnavailable {
+  runtime: 'server-beta';
+  available: false;
+  reason: string;
+}
+
+interface ServerBetaAvailable extends ServerBetaToolContext {
+  available: true;
+}
+
+type ServerBetaResolution = ServerBetaAvailable | ServerBetaUnavailable;
+
+function resolveServerBetaToolContext(): ServerBetaResolution | null {
+  const runtime: SelectedRuntime = selectRuntime();
+  if (runtime !== 'server-beta') {
+    return null;
+  }
+  const ctx = buildServerBetaContext();
+  if (!ctx) {
+    return {
+      runtime: 'server-beta',
+      available: false,
+      reason: 'server-beta is selected but configuration is incomplete (missing url, api key, or project id)',
+    };
+  }
+  return { ...ctx, available: true };
+}
+
+function formatToolError(error: unknown): { content: Array<{ type: 'text'; text: string }>; isError: true } {
+  if (isServerBetaClientError(error)) {
+    return {
+      content: [{
+        type: 'text' as const,
+        text: `Server beta error (${error.kind}${error.status ? ` ${error.status}` : ''}): ${error.message}`,
+      }],
+      isError: true as const,
+    };
+  }
+  return {
+    content: [{
+      type: 'text' as const,
+      text: `Tool error: ${error instanceof Error ? error.message : String(error)}`,
+    }],
+    isError: true as const,
+  };
+}
+
+function formatJsonResult(payload: unknown): { content: Array<{ type: 'text'; text: string }> } {
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify(payload, null, 2),
+    }],
+  };
+}
+
+function requireServerBetaForObservationTool(toolName: string): ServerBetaAvailable {
+  const resolution = resolveServerBetaToolContext();
+  if (!resolution) {
+    throw new ServerBetaClientError(
+      'transport',
+      `${toolName} requires CLAUDE_MEM_RUNTIME=server-beta. Current runtime is "worker"; use the existing search/timeline/get_observations tools for worker-mode memory access.`,
+    );
+  }
+  if (!resolution.available) {
+    throw new ServerBetaClientError('missing_api_key', `${toolName}: ${resolution.reason}`);
+  }
+  return resolution;
+}
+
+interface ObservationAddArgs {
+  projectId?: string;
+  serverSessionId?: string | null;
+  kind?: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+}
+
+async function handleObservationAdd(
+  args: ObservationAddArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const ctx = requireServerBetaForObservationTool('observation_add');
+    if (typeof args?.content !== 'string' || args.content.trim().length === 0) {
+      throw new Error('observation_add: "content" is required');
+    }
+    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+    const request: ServerBetaAddObservationRequest = {
+      projectId,
+      content: args.content,
+      ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+      ...(args.kind !== undefined ? { kind: args.kind } : {}),
+      ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
+    };
+    const response = await ctx.client.addObservation(request);
+    return formatJsonResult(response);
+  } catch (error) {
+    return formatToolError(error);
+  }
+}
+
+interface ObservationRecordEventArgs {
+  projectId?: string;
+  serverSessionId?: string | null;
+  contentSessionId?: string | null;
+  memorySessionId?: string | null;
+  sourceType?: 'hook' | 'worker' | 'provider' | 'server' | 'api';
+  eventType: string;
+  payload?: unknown;
+  occurredAtEpoch?: number;
+  generate?: boolean;
+}
+
+async function handleObservationRecordEvent(
+  args: ObservationRecordEventArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const ctx = requireServerBetaForObservationTool('observation_record_event');
+    if (typeof args?.eventType !== 'string' || args.eventType.trim().length === 0) {
+      throw new Error('observation_record_event: "eventType" is required');
+    }
+    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+    const request: ServerBetaRecordEventRequest = {
+      projectId,
+      sourceType: args.sourceType ?? 'api',
+      eventType: args.eventType,
+      occurredAtEpoch: typeof args.occurredAtEpoch === 'number' ? args.occurredAtEpoch : Date.now(),
+      ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+      ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
+      ...(args.memorySessionId !== undefined ? { memorySessionId: args.memorySessionId } : {}),
+      ...(args.payload !== undefined ? { payload: args.payload } : {}),
+      ...(args.generate !== undefined ? { generate: args.generate } : {}),
+    };
+    const response = await ctx.client.recordEvent(request);
+    return formatJsonResult(response);
+  } catch (error) {
+    return formatToolError(error);
+  }
+}
+
+interface ObservationSearchArgs {
+  projectId?: string;
+  query: string;
+  limit?: number;
+}
+
+async function handleObservationSearch(
+  args: ObservationSearchArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const ctx = requireServerBetaForObservationTool('observation_search');
+    if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
+      throw new Error('observation_search: "query" is required');
+    }
+    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+    const request: ServerBetaSearchObservationsRequest = {
+      projectId,
+      query: args.query,
+      ...(args.limit !== undefined ? { limit: args.limit } : {}),
+    };
+    const response = await ctx.client.searchObservations(request);
+    return formatJsonResult(response);
+  } catch (error) {
+    return formatToolError(error);
+  }
+}
+
+interface ObservationContextArgs {
+  projectId?: string;
+  query: string;
+  limit?: number;
+}
+
+async function handleObservationContext(
+  args: ObservationContextArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const ctx = requireServerBetaForObservationTool('observation_context');
+    if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
+      throw new Error('observation_context: "query" is required');
+    }
+    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+    const request: ServerBetaContextObservationsRequest = {
+      projectId,
+      query: args.query,
+      ...(args.limit !== undefined ? { limit: args.limit } : {}),
+    };
+    const response = await ctx.client.contextObservations(request);
+    return formatJsonResult(response);
+  } catch (error) {
+    return formatToolError(error);
+  }
+}
+
+interface ObservationGenerationStatusArgs {
+  jobId?: string;
+  job_id?: string;
+}
+
+async function handleObservationGenerationStatus(
+  args: ObservationGenerationStatusArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const ctx = requireServerBetaForObservationTool('observation_generation_status');
+    const jobId = (args?.jobId ?? args?.job_id ?? '').trim();
+    if (!jobId) {
+      throw new Error('observation_generation_status: "jobId" is required');
+    }
+    const response = await ctx.client.getJobStatus(jobId);
+    return formatJsonResult(response);
+  } catch (error) {
+    return formatToolError(error);
+  }
+}
+
 async function ensureWorkerConnection(): Promise<boolean> {
   if (await verifyWorkerConnection()) {
     return true;
@@ -257,37 +398,29 @@ async function ensureWorkerConnection(): Promise<boolean> {
 
   logger.warn('SYSTEM', 'Worker not available, attempting auto-start for MCP client');
 
-  // Validate the worker bundle path lazily here (rather than at module load)
-  // so that tests/tools that import this module without booting the MCP
-  // server don't see noisy ERROR-level log lines for a worker they never
-  // intended to start.
   errorIfWorkerScriptMissing();
 
   try {
     const port = getWorkerPort();
-    const started = await ensureWorkerStarted(port, WORKER_SCRIPT_PATH);
-    if (!started) {
+    const result = await ensureWorkerStarted(port, WORKER_SCRIPT_PATH);
+    if (result === 'dead') {
       logger.error(
         'SYSTEM',
-        'Worker auto-start returned false — MCP tools that require the worker (search, timeline, get_observations) will fail until the worker is running. Check earlier log lines for the specific failure reason (Bun not found, missing worker bundle, port conflict, etc.).'
+        'Worker auto-start failed — MCP tools that require the worker (search, timeline, get_observations) will fail until the worker is running. Check earlier log lines for the specific failure reason (Bun not found, missing worker bundle, port conflict, etc.).'
       );
     }
-    return started;
-  } catch (error) {
+    return result !== 'dead';
+  } catch (error: unknown) {
     logger.error(
       'SYSTEM',
       'Worker auto-start threw — MCP tools that require the worker (search, timeline, get_observations) will fail until the worker is running.',
       undefined,
-      error as Error
+      error instanceof Error ? error : new Error(String(error))
     );
     return false;
   }
 }
 
-/**
- * Tool definitions with HTTP-based handlers
- * Minimal descriptions - use help() tool with operation parameter for detailed docs
- */
 const tools = [
   {
     name: '__IMPORTANT',
@@ -384,6 +517,156 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       return await callWorkerAPIPost('/api/observations/batch', args);
     }
   },
+  // Phase 8 — observation_* tools backed by server-beta REST core.
+  // These are the canonical names. memory_* tools below are kept as
+  // compatibility aliases that delegate to these handlers, so existing
+  // MCP clients keep working without rewrites. (Plan line 753.)
+  {
+    name: 'observation_add',
+    description: 'Insert a manual observation directly into server-beta storage. Calls /v1/memories — does NOT enqueue generation. Server-beta runtime only. Params: content (required), projectId (optional, falls back to settings), serverSessionId, kind, metadata.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'Project id (falls back to CLAUDE_MEM_SERVER_BETA_PROJECT_ID)' },
+        serverSessionId: { type: 'string', description: 'Optional server_session_id to attach the observation to' },
+        kind: { type: 'string', description: 'Observation kind (default: manual)' },
+        content: { type: 'string', description: 'Observation content (required)' },
+        metadata: { type: 'object', description: 'Free-form metadata object', additionalProperties: true },
+      },
+      required: ['content'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => handleObservationAdd(args ?? {}),
+  },
+  {
+    name: 'observation_record_event',
+    description: 'Record an agent event into server-beta. Calls /v1/events — server inserts the event row, the outbox row, and enqueues a generation job atomically. Server-beta runtime only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        eventType: { type: 'string', description: 'Event type (required), e.g. PostToolUse, UserPromptSubmit' },
+        sourceType: { type: 'string', enum: ['hook', 'worker', 'provider', 'server', 'api'] },
+        serverSessionId: { type: 'string' },
+        contentSessionId: { type: 'string' },
+        memorySessionId: { type: 'string' },
+        payload: { description: 'Event payload (any JSON value)' },
+        occurredAtEpoch: { type: 'number', description: 'Unix epoch millis (defaults to now)' },
+        generate: { type: 'boolean', description: 'If false, skip generation job (default: true)' },
+      },
+      required: ['eventType'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => handleObservationRecordEvent(args ?? {}),
+  },
+  {
+    name: 'observation_search',
+    description: 'Full-text search across generated observations using server-beta\'s GIN tsvector index (Phase 1). Calls /v1/search. Server-beta runtime only. Params: query (required), projectId (optional), limit (default 20, max 100).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        query: { type: 'string', description: 'Search query (required)' },
+        limit: { type: 'number', description: 'Max results (default 20, max 100)' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => handleObservationSearch(args ?? {}),
+  },
+  {
+    name: 'observation_context',
+    description: 'Get top-N relevant observations for context injection. Returns matched observations AND a pre-joined context string suitable for prompt injection. Calls /v1/context. Server-beta runtime only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        query: { type: 'string', description: 'Search query (required)' },
+        limit: { type: 'number', description: 'Max observations (default 10, max 50)' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => handleObservationContext(args ?? {}),
+  },
+  {
+    name: 'observation_generation_status',
+    description: 'Look up the status of an observation generation job by id. Calls /v1/jobs/:id. Server-beta runtime only. Returns the same payload as REST.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: 'Generation job id (required)' },
+      },
+      required: ['jobId'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => handleObservationGenerationStatus(args ?? {}),
+  },
+  // Compatibility aliases — keep `memory_*` tool names that pre-existed in
+  // src/server/mcp/tools.ts working for any client that bound to them.
+  // These intentionally delegate to the same observation_* handlers so
+  // there is one code path for MCP write/read against server-beta.
+  {
+    name: 'memory_add',
+    description: 'Compatibility alias for observation_add. Same behavior; same schema modulo the legacy field names.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        kind: { type: 'string' },
+        content: { type: 'string' },
+        narrative: { type: 'string', description: 'Legacy alias for content; mapped to content if content is missing' },
+        title: { type: 'string', description: 'Legacy field; appended to metadata.title' },
+        metadata: { type: 'object', additionalProperties: true },
+      },
+      required: ['projectId'],
+      additionalProperties: true,
+    },
+    handler: async (args: any) => {
+      // Map legacy fields onto observation_add. `narrative` was the v1
+      // SQLite payload; it is normalized to `content` before forwarding.
+      const merged: ObservationAddArgs = {
+        projectId: args?.projectId,
+        content: args?.content ?? args?.narrative ?? '',
+        kind: args?.kind,
+        metadata: {
+          ...(args?.metadata ?? {}),
+          ...(args?.title ? { title: args.title } : {}),
+        },
+      };
+      return handleObservationAdd(merged);
+    },
+  },
+  {
+    name: 'memory_search',
+    description: 'Compatibility alias for observation_search. Same FTS path; same /v1/search REST endpoint.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        query: { type: 'string' },
+        limit: { type: 'number' },
+      },
+      required: ['projectId', 'query'],
+      additionalProperties: true,
+    },
+    handler: async (args: any) => handleObservationSearch(args ?? {}),
+  },
+  {
+    name: 'memory_context',
+    description: 'Compatibility alias for observation_context. Same /v1/context REST endpoint.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        query: { type: 'string' },
+        limit: { type: 'number' },
+      },
+      required: ['projectId', 'query'],
+      additionalProperties: true,
+    },
+    handler: async (args: any) => handleObservationContext(args ?? {}),
+  },
   {
     name: 'smart_search',
     description: 'Search codebase for symbols, functions, classes using tree-sitter AST parsing. Returns folded structural views with token counts. Use path parameter to scope the search.',
@@ -447,7 +730,6 @@ NEVER fetch full details without filtering first. 10x token savings.`,
           content: [{ type: 'text' as const, text: unfolded }]
         };
       }
-      // Symbol not found — show available symbols
       const parsed = parseFile(content, filePath);
       if (parsed.symbols.length > 0) {
         const available = parsed.symbols.map(s => `  - ${s.name} (${s.kind})`).join('\n');
@@ -600,103 +882,9 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
       return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/reprime`, rest);
     }
-  },
-  {
-    name: 'save_memory',
-    description: 'Save a quick note/memory as an observation. Params: text (required), title, project, generated_by_model',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        text: { type: 'string', description: 'Memory text content (required)' },
-        title: { type: 'string', description: 'Short title for the memory' },
-        project: { type: 'string', description: 'Project name (default: current project)' },
-        generated_by_model: { type: 'string', description: 'Model that generated this memory' }
-      },
-      required: ['text']
-    },
-    handler: async (args: any) => {
-      return await callWorkerAPIPost('/api/memory/save', args);
-    }
-  },
-  {
-    name: 'save_observation',
-    description: 'Save a structured observation with type, narrative, facts, and file references.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        type: { type: 'string', description: 'Observation type: discovery, decision, feature, bugfix, change, pattern, architecture' },
-        title: { type: 'string', description: 'Short title' },
-        subtitle: { type: 'string', description: 'Subtitle/summary' },
-        narrative: { type: 'string', description: 'Full narrative text (required)' },
-        facts: { type: 'array', items: { type: 'string' }, description: 'Key facts' },
-        concepts: { type: 'array', items: { type: 'string' }, description: 'Related concepts' },
-        files_read: { type: 'array', items: { type: 'string' }, description: 'Files read' },
-        files_modified: { type: 'array', items: { type: 'string' }, description: 'Files modified' },
-        project: { type: 'string', description: 'Project name' },
-        generated_by_model: { type: 'string', description: 'Model that generated this observation' }
-      },
-      required: ['type', 'narrative']
-    },
-    handler: async (args: any) => {
-      return await callWorkerAPIPost('/api/memory/save-observation', args);
-    }
-  },
-  {
-    name: 'mem_confirm',
-    description: 'Mark an observation as confirmed (correctness=confirmed).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: { type: 'number', description: 'Observation ID to confirm' }
-      },
-      required: ['id']
-    },
-    handler: async (args: any) => {
-      return await callWorkerAPIPatch(`/api/memory/observations/${args.id}/confirm`);
-    }
-  },
-  {
-    name: 'mem_deprecate',
-    description: 'Deprecate an observation (soft delete). Excluded from search and context.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: { type: 'number', description: 'Observation ID to deprecate' }
-      },
-      required: ['id']
-    },
-    handler: async (args: any) => {
-      return await callWorkerAPIPatch(`/api/memory/observations/${args.id}/deprecate`);
-    }
-  },
-  {
-    name: 'mem_flag',
-    description: 'Flag an observation as potentially conflicting or outdated.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: { type: 'number', description: 'Observation ID to flag' }
-      },
-      required: ['id']
-    },
-    handler: async (args: any) => {
-      return await callWorkerAPIPatch(`/api/memory/observations/${args.id}/flag`);
-    }
-  },
-  {
-    name: 'mem_stats',
-    description: 'Get memory system statistics: observation counts by status, correctness, flags, top projects, feedback totals.',
-    inputSchema: {
-      type: 'object',
-      properties: {}
-    },
-    handler: async () => {
-      return await callWorkerAPIGet('/api/memory/stats');
-    }
   }
 ];
 
-// Create the MCP server
 const server = new Server(
   {
     name: 'claude-mem',
@@ -709,7 +897,6 @@ const server = new Server(
   }
 );
 
-// Register tools/list handler
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: tools.map(tool => ({
@@ -720,7 +907,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
-// Register tools/call handler
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const tool = tools.find(t => t.name === request.params.name);
 
@@ -730,8 +916,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     return await tool.handler(request.params.arguments || {});
-  } catch (error) {
-    logger.error('SYSTEM', 'Tool execution failed', { tool: request.params.name }, error as Error);
+  } catch (error: unknown) {
+    logger.error('SYSTEM', 'Tool execution failed', { tool: request.params.name }, error instanceof Error ? error : new Error(String(error)));
     return {
       content: [{
         type: 'text' as const,
@@ -742,8 +928,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Parent heartbeat: self-exit when parent dies (ppid=1 on Unix means orphaned)
-// Prevents orphaned MCP server processes when Claude Code exits unexpectedly
 const HEARTBEAT_INTERVAL_MS = 30_000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let isCleaningUp = false;
@@ -772,7 +956,6 @@ function detachStdioLifecycle() {
 }
 
 function startParentHeartbeat() {
-  // ppid-based orphan detection only works on Unix
   if (process.platform === 'win32') return;
 
   const initialPpid = process.ppid;
@@ -786,12 +969,9 @@ function startParentHeartbeat() {
     }
   }, HEARTBEAT_INTERVAL_MS);
 
-  // Don't let the heartbeat timer keep the process alive
   if (heartbeatTimer.unref) heartbeatTimer.unref();
 }
 
-// Cleanup function — synchronous to ensure consistent behavior whether called
-// from signal handlers, heartbeat interval, or awaited in async context
 function cleanup(reason: string = 'shutdown') {
   if (isCleaningUp) return;
   isCleaningUp = true;
@@ -802,23 +982,54 @@ function cleanup(reason: string = 'shutdown') {
   process.exit(0);
 }
 
-// Register cleanup handlers for graceful shutdown
 process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
-// Start the server
+function checkMarketplaceMarker(): void {
+  try {
+    const home = homedir();
+    const marketplaceCandidates = [
+      resolve(home, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
+      resolve(home, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
+    ];
+    const present = marketplaceCandidates.some(p => p && existsSync(p));
+    const cacheCandidates = [
+      resolve(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+      resolve(home, '.config', 'claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+    ];
+    const cachePresent = cacheCandidates.some(p => p && existsSync(p));
+    const cacheRoot = cacheCandidates[0];
+
+    if (!present && cachePresent) {
+      logger.error(
+        'SYSTEM',
+        'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack or the XDG equivalent. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, run: node ~/.claude/plugins/cache/thedotmack/claude-mem/*/scripts/smart-install.js (or reinstall the plugin from the marketplace).',
+        { marketplaceCandidates, cacheRoot }
+      );
+    }
+  } catch {
+  }
+}
+
 async function main() {
-  // Start the MCP server
   const transport = new StdioServerTransport();
   attachStdioLifecycle();
   await server.connect(transport);
   logger.info('SYSTEM', 'Claude-mem search server started');
 
-  // Start parent heartbeat to detect orphaned MCP servers
+  checkMarketplaceMarker();
+
   startParentHeartbeat();
 
-  // Check Worker availability in background
   setTimeout(async () => {
+    // Phase 8 — when CLAUDE_MEM_RUNTIME=server-beta, MCP must NOT auto-start
+    // the worker. observation_* tools talk to server-beta directly; the
+    // legacy worker-backed tools (search/timeline/get_observations) will
+    // simply error with a helpful message until the user switches runtime.
+    if (selectRuntime() === 'server-beta') {
+      logger.info('SYSTEM', 'MCP runtime=server-beta — skipping worker auto-start', undefined, {});
+      return;
+    }
     const workerAvailable = await ensureWorkerConnection();
     if (!workerAvailable) {
       logger.error('SYSTEM', 'Worker not available', undefined, {});
@@ -832,7 +1043,5 @@ async function main() {
 
 main().catch((error) => {
   logger.error('SYSTEM', 'Fatal error', undefined, error);
-  // Exit gracefully: Windows Terminal won't keep tab open on exit 0
-  // The wrapper/plugin will handle restart logic if needed
   process.exit(0);
 });
