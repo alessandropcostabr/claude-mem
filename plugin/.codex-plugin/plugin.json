@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "13.2.0",
+  "version": "12.2.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "author": {
     "name": "Alex Newman",
@@ -8,7 +8,7 @@
   },
   "homepage": "https://github.com/thedotmack/claude-mem#readme",
   "repository": "https://github.com/thedotmack/claude-mem",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0",
   "keywords": [
     "claude",
     "claude-code",
