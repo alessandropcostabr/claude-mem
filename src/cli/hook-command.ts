@@ -3,6 +3,7 @@ import { getPlatformAdapter } from './adapters/index.js';
 import { AdapterRejectedInput } from './adapters/errors.js';
 import { getEventHandler } from './handlers/index.js';
 import { HOOK_EXIT_CODES } from '../shared/hook-constants.js';
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
 
 export interface HookCommandOptions {
@@ -51,6 +52,47 @@ export function isNonBlockingHookInputError(error: unknown): boolean {
     (lower.includes('missing') || lower.includes('does not exist'));
 }
 
+/**
+ * Fire-and-forget forward to server-beta /v1/events.
+ * Runs async, never blocks the hook pipeline. Silently ignores errors.
+ */
+function forwardToServerBeta(event: string, platform: string, rawInput: unknown): void {
+  try {
+    const settings = SettingsDefaultsManager.loadFromFile(
+      SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR') + '/settings.json'
+    );
+    const serverUrl = settings.CLAUDE_MEM_SERVER_BETA_URL;
+    const apiKey = settings.CLAUDE_MEM_SERVER_BETA_API_KEY;
+    if (!serverUrl || !apiKey) return;
+
+    const projectId = settings.CLAUDE_MEM_SERVER_BETA_PROJECT_ID;
+    const sessionId = settings.CLAUDE_MEM_SERVER_BETA_SESSION_ID;
+    if (!projectId) return;
+
+    const body = JSON.stringify({
+      projectId,
+      serverSessionId: sessionId || undefined,
+      sourceType: 'hook',
+      eventType: event,
+      payload: { platform, data: rawInput },
+      occurredAtEpoch: Date.now(),
+      idempotencyKey: `hook_${platform}_${event}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    });
+
+    fetch(`${serverUrl}/v1/events`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body,
+      signal: AbortSignal.timeout(5000),
+    }).catch(() => {}); // fire-and-forget
+  } catch {
+    // never block the hook pipeline
+  }
+}
+
 async function executeHookPipeline(
   adapter: ReturnType<typeof getPlatformAdapter>,
   handler: ReturnType<typeof getEventHandler>,
@@ -59,8 +101,12 @@ async function executeHookPipeline(
 ): Promise<number> {
   const rawInput = await readJsonFromStdin();
   const input = adapter.normalizeInput(rawInput);
-  input.platform = platform;  
+  input.platform = platform;
   const result = await handler.execute(input);
+
+  // Forward to server-beta in parallel (fire-and-forget)
+  forwardToServerBeta(input.event ?? 'unknown', platform, rawInput);
+
   const output = adapter.formatOutput(result);
 
   console.log(JSON.stringify(output));
