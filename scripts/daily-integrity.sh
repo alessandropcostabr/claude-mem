@@ -10,6 +10,10 @@
 
 set -euo pipefail
 
+# Fleet config (hosts, ntfy, SSH)
+FLEET_ENV="$HOME/.claude-mem/.env-fleet"
+[ -f "$FLEET_ENV" ] && source "$FLEET_ENV"
+
 PLUGIN_DIR="$HOME/.claude/plugins/marketplaces/thedotmack/plugin"
 DB_PATH="$HOME/.claude-mem/claude-mem.db"
 WORKER_CJS="$PLUGIN_DIR/scripts/worker-service.cjs"
@@ -19,9 +23,9 @@ WAL_WARN_BYTES=$((50 * 1024 * 1024))   # 50MB
 LOG_FILE="$HOME/.claude-mem/logs/daily-integrity.log"
 ALERT_COOLDOWN_FILE="/tmp/daily-integrity-cooldown"
 COOLDOWN_SECONDS=3600
-NTFY_URL="${NTFY_URL:-https://ntfy.sh}"
-NTFY_TOPIC="${NTFY_TOPIC:-late-2bb217698af50e4a}"
-NTFY_TOKEN="${NTFY_TOKEN:-tk_1yjuubfgyub1byig1gfqdl4lvvfe7}"
+NTFY_URL="${NTFY_URL:-}"
+NTFY_TOPIC="${NTFY_TOPIC:-}"
+NTFY_TOKEN="${NTFY_TOKEN:-}"
 NOTIFY=false
 JSON=false
 FAILURES=0
@@ -75,7 +79,7 @@ check_tg_patch() {
   local has_reaction has_allowed has_keepalive
   has_reaction=$(grep -c "message_reaction" "$server_ts" 2>/dev/null || true)
   has_allowed=$(grep -c "allowed_updates" "$server_ts" 2>/dev/null || true)
-  has_keepalive=$(grep -cE "telegram-keepalive|mcp\.ping\(\)" "$server_ts" 2>/dev/null || true)
+  has_keepalive=$(grep -c "telegram-keepalive" "$server_ts" 2>/dev/null || true)
   if [ "$has_reaction" -gt 0 ] && [ "$has_allowed" -gt 0 ] && [ "$has_keepalive" -gt 0 ]; then
     RESULTS+=("OK|telegram|TG-PATCH|Patch present in server.ts $ver (reaction+keepalive)")
   else
@@ -107,8 +111,9 @@ check_tg_version() {
   else
     RESULTS+=("FAIL|telegram|TG-VERSION|Version changed: $last_ver → $ver (patch may have been lost)")
     FAILURES=$((FAILURES + 1))
+    return
   fi
-  # Atualiza após registrar o resultado
+  # Atualiza apenas quando versão está OK (não consumir o FAIL)
   echo "$ver" > "$TG_VERSION_FILE"
 }
 
@@ -218,6 +223,21 @@ check_worker_custom() {
   fi
 }
 
+check_skill_install() {
+  local skill_dir="$PLUGIN_DIR/skills/daily-maintenance"
+  if [ ! -f "$skill_dir/SKILL.md" ]; then
+    RESULTS+=("FAIL|worker|SKILL-INSTALL|/daily-maintenance skill missing from plugin dir")
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [ ! -f "$skill_dir/patch-telegram.py" ]; then
+    RESULTS+=("WARN|worker|SKILL-INSTALL|SKILL.md present but patch-telegram.py missing")
+    WARNINGS=$((WARNINGS + 1))
+    return
+  fi
+  RESULTS+=("OK|worker|SKILL-INSTALL|/daily-maintenance skill installed (SKILL.md + patch-telegram.py)")
+}
+
 # ========================================
 # MAIN
 # ========================================
@@ -229,6 +249,7 @@ check_wal
 check_c4_data
 check_journal
 check_worker_custom
+check_skill_install
 
 # ========================================
 # OUTPUT
