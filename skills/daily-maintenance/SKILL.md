@@ -171,6 +171,24 @@ Mesmo procedimento de rebuild do C4-DATA acima.
 
 ---
 
+#### SKILL-INSTALL FAIL — /daily-maintenance skill ausente
+
+A skill foi apagada por um plugin update. Reinstalar:
+
+```bash
+# Do repo para o plugin dir local
+cp ~/claude-mem-contrib/skills/daily-maintenance/{SKILL.md,patch-telegram.py} \
+   ~/.claude/plugins/marketplaces/thedotmack/plugin/skills/daily-maintenance/
+
+# Para as outras máquinas
+scp ~/claude-mem-contrib/skills/daily-maintenance/{SKILL.md,patch-telegram.py} \
+  192.168.0.253:~/.claude/plugins/marketplaces/thedotmack/plugin/skills/daily-maintenance/
+scp ~/claude-mem-contrib/skills/daily-maintenance/{SKILL.md,patch-telegram.py} \
+  192.168.0.100:~/.claude/plugins/marketplaces/thedotmack/plugin/skills/daily-maintenance/
+```
+
+---
+
 #### JOURNAL FAIL — erros críticos no journalctl
 
 Não tomar ação automática. Mostrar os erros ao usuário:
