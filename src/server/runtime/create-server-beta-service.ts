@@ -11,6 +11,8 @@ import { ActiveServerBetaGenerationWorkerManager } from './ActiveServerBetaGener
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
 import { GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
+import { GroqObservationProvider } from '../generation/providers/GroqObservationProvider.js';
+import { ClaudeSubscriptionObservationProvider } from '../generation/providers/ClaudeSubscriptionObservationProvider.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import { ServerBetaService } from './ServerBetaService.js';
 import { ModeManager } from '../../services/domain/ModeManager.js';
@@ -243,6 +245,18 @@ function buildServerGenerationProviderFromEnv(): ServerGenerationProvider | null
       const opts: { apiKey: string; model?: string } = { apiKey };
       if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
       return new OpenRouterObservationProvider(opts);
+    }
+    if (provider === 'groq') {
+      const apiKey = process.env.GROQ_API_KEY ?? process.env.CLAUDE_MEM_GROQ_API_KEY ?? '';
+      if (!apiKey) return null;
+      const opts: { apiKey: string; model?: string } = { apiKey };
+      if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+      return new GroqObservationProvider(opts);
+    }
+    if (provider === 'claude-subscription' || provider === 'claude-oauth') {
+      const opts: { model?: string } = {};
+      if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+      return new ClaudeSubscriptionObservationProvider(opts);
     }
   } catch {
     return null;
