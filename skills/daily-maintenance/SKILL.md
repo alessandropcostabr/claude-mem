@@ -11,6 +11,16 @@ Guia interativo para resolver problemas detectados pelos scripts de monitorament
 
 Invoque com `/daily-maintenance` após receber um alerta ntfy, ou como rotina matinal após 8h quando os crons já rodaram.
 
+## Pré-requisito: carregar variáveis do fleet
+
+Antes de executar qualquer comando, leia o arquivo de configuração:
+
+```bash
+cat ~/.claude-mem/.env-fleet
+```
+
+Use as variáveis `$FLEET_BOT_HOST`, `$FLEET_PROD_HOST` e `$FLEET_USER` nos comandos abaixo.
+
 ## Checklist de execução
 
 Siga estes passos em ordem. Não pule etapas.
@@ -20,7 +30,7 @@ Siga estes passos em ordem. Não pule etapas.
 Leia os 3 arquivos de log em paralelo:
 
 ```bash
-# Log do daily-integrity (7 checks de degradação silenciosa)
+# Log do daily-integrity (8 checks de degradação silenciosa)
 tail -100 ~/.claude-mem/logs/daily-integrity.log
 
 # Log do verify-custom-phases (código compilado + dados DB)
@@ -65,16 +75,16 @@ Se confirmado:
 python3 ~/claude-mem-contrib/skills/daily-maintenance/patch-telegram.py
 
 # Reiniciar o bot (claude-patched faz respawn automático)
-ssh 192.168.0.100 'pkill -f "bun.*server.ts" 2>/dev/null || true'
+ssh $FLEET_BOT_HOST 'pkill -f "bun.*server.ts" 2>/dev/null || true'
 
 # Aguardar 5s e verificar
 sleep 5
-ssh 192.168.0.100 'ps aux | grep "bun.*server.ts" | grep -v grep | head -2'
+ssh $FLEET_BOT_HOST 'ps aux | grep "bun.*server.ts" | grep -v grep | head -2'
 ```
 
 Verificar:
 ```bash
-PLUGIN_TOKEN=$(ssh 192.168.0.100 'grep TELEGRAM_BOT_TOKEN ~/.claude/channels/telegram/.env 2>/dev/null | cut -d= -f2')
+PLUGIN_TOKEN=$(ssh $FLEET_BOT_HOST 'grep TELEGRAM_BOT_TOKEN ~/.claude/channels/telegram/.env 2>/dev/null | cut -d= -f2')
 curl -s -m 5 "https://api.telegram.org/bot${PLUGIN_TOKEN}/getMe" | python3 -c "import json,sys; d=json.load(sys.stdin); print('ok:',d.get('ok'),'@'+d.get('result',{}).get('username','?'))"
 ```
 
@@ -94,37 +104,37 @@ ls ~/.claude/plugins/cache/claude-plugins-official/telegram/ | sort -V | tail -1
 #### TG-BOT FAIL — Bot não responde
 
 ```bash
-# Verificar se bun server.ts está rodando no .100
-ssh 192.168.0.100 'ps aux | grep "bun.*server.ts" | grep -v grep'
+# Verificar se bun server.ts está rodando na máquina do bot
+ssh $FLEET_BOT_HOST 'ps aux | grep "bun.*server.ts" | grep -v grep'
 
 # Se não estiver: verificar sessão tmux
-ssh 192.168.0.100 'tmux ls 2>/dev/null'
+ssh $FLEET_BOT_HOST 'tmux ls 2>/dev/null'
 ```
 
 Se sessão `claude-tg` não existe:
 ```bash
-ssh 192.168.0.100 'tmux new-session -d -s claude-tg -c /home/alessandro "claude-patched --channels plugin:telegram@claude-plugins-official"'
+ssh $FLEET_BOT_HOST "tmux new-session -d -s claude-tg -c /home/$FLEET_USER \"claude-patched --channels plugin:telegram@claude-plugins-official\""
 ```
 
 Se sessão existe mas bot não sobe em 30s, verificar logs:
 ```bash
-ssh 192.168.0.100 'tmux capture-pane -p -t claude-tg 2>/dev/null | tail -20'
+ssh $FLEET_BOT_HOST 'tmux capture-pane -p -t claude-tg 2>/dev/null | tail -20'
 ```
 
 ---
 
 #### WAL WARN — db-wal > 50MB
 
-Pergunte: "Executar WAL checkpoint no .253? (operação segura, reduz tamanho do db-wal)"
+Pergunte: "Executar WAL checkpoint no servidor de produção? (operação segura, reduz tamanho do db-wal)"
 
 Se confirmado:
 ```bash
-ssh 192.168.0.253 '~/.bun/bin/bun -e "
+ssh $FLEET_PROD_HOST '~/.bun/bin/bun -e "
 const Database = require(\"bun:sqlite\").Database;
-const db = new Database(\"/home/alessandro/.claude-mem/claude-mem.db\");
+const db = new Database(\"$HOME/.claude-mem/claude-mem.db\");
 const row = db.prepare(\"PRAGMA wal_checkpoint(TRUNCATE)\").get();
 console.log(\"checkpoint:\", JSON.stringify(row));
-const size = require(\"fs\").statSync(\"/home/alessandro/.claude-mem/claude-mem.db-wal\").size;
+const size = require(\"fs\").statSync(\"$HOME/.claude-mem/claude-mem.db-wal\").size;
 console.log(\"WAL after:\", (size/1024).toFixed(0) + \"KB\");
 db.close();
 "'
@@ -142,7 +152,7 @@ curl -s -X POST http://localhost:37777/api/metrics/telegram-reaction \
 
 Se retornar `{"error":...}` ou connection refused → worker desatualizado, precisa rebuild:
 
-Pergunte: "Rebuildar worker e fazer deploy? (vai compilar ~/claude-mem-contrib e sincronizar para as 3 máquinas)"
+Pergunte: "Rebuildar worker e fazer deploy? (vai compilar ~/claude-mem-contrib e sincronizar para as máquinas do fleet)"
 
 Se confirmado:
 ```bash
@@ -151,13 +161,13 @@ rm -f plugin/scripts/worker-service.cjs
 node scripts/build-hooks.js 2>&1 | tail -5
 grep -c "telegram-reaction" plugin/scripts/worker-service.cjs && echo "build OK"
 
-# Deploy .253
-scp plugin/scripts/worker-service.cjs 192.168.0.253:~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs
-ssh 192.168.0.253 'systemctl --user restart claude-mem-worker && sleep 3 && curl -s http://localhost:37777/health | head -1'
+# Deploy para produção
+scp plugin/scripts/worker-service.cjs $FLEET_PROD_HOST:~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs
+ssh $FLEET_PROD_HOST 'systemctl --user restart claude-mem-worker && sleep 3 && curl -s http://localhost:37777/health | head -1'
 
-# Deploy .100
-scp plugin/scripts/worker-service.cjs 192.168.0.100:~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs
-ssh 192.168.0.100 'systemctl --user restart claude-mem-worker && sleep 3 && curl -s http://localhost:37777/health | head -1'
+# Deploy para bot host
+scp plugin/scripts/worker-service.cjs $FLEET_BOT_HOST:~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs
+ssh $FLEET_BOT_HOST 'systemctl --user restart claude-mem-worker && sleep 3 && curl -s http://localhost:37777/health | head -1'
 
 # Reiniciar local
 systemctl --user restart claude-mem-worker 2>/dev/null || true
@@ -182,9 +192,9 @@ cp ~/claude-mem-contrib/skills/daily-maintenance/{SKILL.md,patch-telegram.py} \
 
 # Para as outras máquinas
 scp ~/claude-mem-contrib/skills/daily-maintenance/{SKILL.md,patch-telegram.py} \
-  192.168.0.253:~/.claude/plugins/marketplaces/thedotmack/plugin/skills/daily-maintenance/
+  $FLEET_PROD_HOST:~/.claude/plugins/marketplaces/thedotmack/plugin/skills/daily-maintenance/
 scp ~/claude-mem-contrib/skills/daily-maintenance/{SKILL.md,patch-telegram.py} \
-  192.168.0.100:~/.claude/plugins/marketplaces/thedotmack/plugin/skills/daily-maintenance/
+  $FLEET_BOT_HOST:~/.claude/plugins/marketplaces/thedotmack/plugin/skills/daily-maintenance/
 ```
 
 ---

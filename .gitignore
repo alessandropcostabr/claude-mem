@@ -38,3 +38,6 @@ src/ui/viewer.html
 
 # Local contribution analysis (not part of upstream)
 CONTRIB_NOTES.md
+
+# Fleet secrets (hosts, tokens, SSH keys)
+.env-fleet
