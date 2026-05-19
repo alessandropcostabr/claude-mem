@@ -10,10 +10,12 @@ import { statSync } from 'fs';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { getProjectContext } from '../../utils/project-name.js';
+import { HybridScorer } from '../../services/scoring/HybridScorer.js';
 
 const FILE_READ_GATE_MIN_BYTES = 1_500;
 
-const FETCH_LOOKAHEAD_LIMIT = 40;
+/** Fetch more candidates than the display limit so scoring still fills 15 slots. */
+const FETCH_LOOKAHEAD_LIMIT = 60;
 
 const DISPLAY_LIMIT = 15;
 const MAX_FILE_CONTEXT_PATHS = 10;
@@ -45,10 +47,14 @@ interface ObservationRow {
   id: number;
   memory_session_id: string;
   title: string | null;
+  subtitle?: string | null;
   type: string;
   created_at_epoch: number;
   files_read: string | null;
   files_modified: string | null;
+  project?: string;
+  relevance_count?: number;
+  correctness?: string;
 }
 
 function deduplicateObservations(
@@ -56,6 +62,7 @@ function deduplicateObservations(
   targetPath: string,
   displayLimit: number
 ): ObservationRow[] {
+  // Phase 1: Keep only the most recent observation per session
   const seenSessions = new Set<string>();
   const dedupedBySession: ObservationRow[] = [];
   for (const obs of observations) {
@@ -66,6 +73,7 @@ function deduplicateObservations(
     }
   }
 
+  // Phase 2: Score by specificity to the target file
   const scored = dedupedBySession.map(obs => {
     const filesRead = parseJsonArray(obs.files_read);
     const filesModified = parseJsonArray(obs.files_modified);
@@ -81,9 +89,31 @@ function deduplicateObservations(
     return { obs, specificityScore };
   });
 
-  scored.sort((a, b) => b.specificityScore - a.specificityScore);
+  // Phase 3: Apply hybrid scoring (recency + authority + coherence + specificity)
+  const queryProject = scored[0]?.obs.project || '';
+  const hybridScorer = new HybridScorer();
+  const hybridScored = scored.map(({ obs, specificityScore }) => {
+    const dims = hybridScorer.computeScore({
+      createdAtEpoch: obs.created_at_epoch,
+      relevanceCount: obs.relevance_count ?? 0,
+      correctness: obs.correctness ?? 'unverified',
+      observationProject: obs.project || '',
+      queryProject,
+    });
+    // Combine: specificity (0-4 -> 0-1) + hybrid dimensions
+    const normalizedSpecificity = specificityScore / 4;
+    const finalScore = normalizedSpecificity * 0.3 + dims.final * 0.7;
+    return { obs, finalScore, dims };
+  });
 
-  return scored.slice(0, displayLimit).map(s => s.obs);
+  hybridScored.sort((a, b) => b.finalScore - a.finalScore);
+
+  const result = hybridScored.slice(0, displayLimit);
+  if (result.length > 0) {
+    logger.info('SCORING', `file-context: top=${result[0].obs.id} score=${result[0].finalScore.toFixed(3)} rec=${result[0].dims.recency.toFixed(2)} auth=${result[0].dims.authority.toFixed(2)} n=${result.length}`);
+  }
+
+  return result.map(s => s.obs);
 }
 
 function formatFileTimeline(
