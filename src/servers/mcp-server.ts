@@ -155,6 +155,44 @@ async function callWorkerAPIPost(
   }
 }
 
+async function callWorkerAPIGet(
+  endpoint: string
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const response = await workerHttpRequest(endpoint);
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Worker API error (${response.status}): ${errorText}`);
+    }
+    const data = await response.json();
+    return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+  } catch (error) {
+    return {
+      content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+      isError: true
+    };
+  }
+}
+
+async function callWorkerAPIPatch(
+  endpoint: string
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  try {
+    const response = await workerHttpRequest(endpoint, { method: 'PATCH' });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Worker API error (${response.status}): ${errorText}`);
+    }
+    const data = await response.json();
+    return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+  } catch (error) {
+    return {
+      content: [{ type: 'text' as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+      isError: true
+    };
+  }
+}
+
 async function verifyWorkerConnection(): Promise<boolean> {
   try {
     const response = await workerHttpRequest('/api/health');
@@ -515,6 +553,101 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       return await callWorkerAPIPost('/api/observations/batch', args);
+    }
+  },
+  // Custom tools — save_memory, save_observation, governance (confirm/deprecate/flag), stats.
+  // These talk to the worker API endpoints added in Phase 7.
+  {
+    name: 'save_memory',
+    description: 'Save a quick note/memory as an observation. Params: text (required), title, project, generated_by_model',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Memory text content (required)' },
+        title: { type: 'string', description: 'Short title for the memory' },
+        project: { type: 'string', description: 'Project name (default: current project)' },
+        generated_by_model: { type: 'string', description: 'Model that generated this memory' }
+      },
+      required: ['text']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/memory/save', args);
+    }
+  },
+  {
+    name: 'save_observation',
+    description: 'Save a structured observation with type, narrative, facts, and file references.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', description: 'Observation type: discovery, decision, feature, bugfix, change, pattern, architecture' },
+        title: { type: 'string', description: 'Short title' },
+        subtitle: { type: 'string', description: 'Subtitle/summary' },
+        narrative: { type: 'string', description: 'Full narrative text (required)' },
+        facts: { type: 'array', items: { type: 'string' }, description: 'Key facts' },
+        concepts: { type: 'array', items: { type: 'string' }, description: 'Related concepts' },
+        files_read: { type: 'array', items: { type: 'string' }, description: 'Files read' },
+        files_modified: { type: 'array', items: { type: 'string' }, description: 'Files modified' },
+        project: { type: 'string', description: 'Project name' },
+        generated_by_model: { type: 'string', description: 'Model that generated this observation' }
+      },
+      required: ['type', 'narrative']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/memory/save-observation', args);
+    }
+  },
+  {
+    name: 'mem_confirm',
+    description: 'Mark an observation as confirmed (correctness=confirmed).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Observation ID to confirm' }
+      },
+      required: ['id']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPatch(`/api/memory/observations/${args.id}/confirm`);
+    }
+  },
+  {
+    name: 'mem_deprecate',
+    description: 'Deprecate an observation (soft delete). Excluded from search and context.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Observation ID to deprecate' }
+      },
+      required: ['id']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPatch(`/api/memory/observations/${args.id}/deprecate`);
+    }
+  },
+  {
+    name: 'mem_flag',
+    description: 'Flag an observation as potentially conflicting or outdated.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Observation ID to flag' }
+      },
+      required: ['id']
+    },
+    handler: async (args: any) => {
+      return await callWorkerAPIPatch(`/api/memory/observations/${args.id}/flag`);
+    }
+  },
+  {
+    name: 'mem_stats',
+    description: 'Get memory system statistics: observation counts by status, correctness, flags, top projects, feedback totals.',
+    inputSchema: {
+      type: 'object',
+      properties: {}
+    },
+    handler: async () => {
+      return await callWorkerAPIGet('/api/memory/stats');
     }
   },
   // Phase 8 — observation_* tools backed by server-beta REST core.
