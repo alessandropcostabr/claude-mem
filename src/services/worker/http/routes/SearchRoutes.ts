@@ -427,7 +427,14 @@ export class SearchRoutes extends BaseRouteHandler {
       lines.push('');
     }
 
-    res.json({ context: lines.join('\n'), count: observations.length });
+    const maxTokens = parseInt(SettingsDefaultsManager.get('CLAUDE_MEM_SEMANTIC_MAX_TOKENS')) || 3000;
+    const maxChars = maxTokens * 4;
+    let contextText = lines.join('\n');
+    if (contextText.length > maxChars) {
+      contextText = contextText.slice(0, maxChars) + '\n\n[contexto truncado por CLAUDE_MEM_SEMANTIC_MAX_TOKENS]';
+      logger.debug('SEARCH', `Context truncated: ${contextText.length} chars > ${maxChars} limit`);
+    }
+    res.json({ context: contextText, count: observations.length });
   });
 
   private handleOnboardingExplainer = this.wrapHandler((_req: Request, res: Response): void => {
