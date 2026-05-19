@@ -106,6 +106,7 @@ export class DataRoutes extends BaseRouteHandler {
     app.post('/api/processing', validateBody(setProcessingSchema), this.handleSetProcessing.bind(this));
 
     app.post('/api/import', validateBody(importSchema), this.handleImport.bind(this));
+    app.post('/api/metrics/telegram-reaction', this.handleTrackTelegramReaction.bind(this));
   }
 
   private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
@@ -283,6 +284,41 @@ export class DataRoutes extends BaseRouteHandler {
     const activeSessions = this.sessionManager.getActiveSessionCount();
 
     res.json({ status: 'ok', isProcessing, queueDepth, activeSessions });
+  });
+
+  private handleTrackTelegramReaction = this.wrapHandler((req: Request, res: Response): void => {
+    const { emoji, userId } = req.body;
+    const db = this.dbManager.getSessionStore().db;
+
+    const recentObs = db.prepare(
+      "SELECT id FROM observations WHERE status != 'deprecated' ORDER BY created_at_epoch DESC LIMIT 5"
+    ).all() as { id: number }[];
+
+    if (recentObs.length === 0) {
+      res.json({ success: true, recorded: 0 });
+      return;
+    }
+
+    const now = Date.now();
+    const source = `telegram:${emoji || '\u{1F44D}'}:${userId || 'unknown'}`;
+    const insert = db.prepare(
+      'INSERT INTO observation_feedback (observation_id, signal, source, created_at_epoch) VALUES (?, ?, ?, ?)'
+    );
+    const updateRelevance = db.prepare(
+      'UPDATE observations SET relevance_count = relevance_count + 1 WHERE id = ?'
+    );
+
+    for (const obs of recentObs) {
+      try {
+        insert.run(obs.id, 'telegram_reaction', source, now);
+        updateRelevance.run(obs.id);
+      } catch (e) {
+        logger.debug('FEEDBACK', 'Failed to record telegram_reaction', { obsId: obs.id, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+
+    logger.info('FEEDBACK', `Recorded telegram_reaction for ${recentObs.length} recent observations`, { emoji, userId });
+    res.json({ success: true, recorded: recentObs.length });
   });
 
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string } {
