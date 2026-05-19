@@ -11,6 +11,7 @@ import { ChromaSync } from '../../../sync/ChromaSync.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { SessionSearch } from '../../../sqlite/SessionSearch.js';
 import { logger } from '../../../../utils/logger.js';
+import { HybridScorer } from '../../../scoring/HybridScorer.js';
 
 export class HybridSearchStrategy extends BaseSearchStrategy implements SearchStrategy {
   readonly name = 'hybrid';
@@ -59,7 +60,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     const ids = metadataResults.map(obs => obs.id);
 
-    return await this.rankAndHydrate(concept, ids, limit);
+    return await this.rankAndHydrate(concept, ids, limit, project);
   }
 
   async findByType(
@@ -80,7 +81,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     const ids = metadataResults.map(obs => obs.id);
 
-    return await this.rankAndHydrate(typeStr, ids, limit);
+    return await this.rankAndHydrate(typeStr, ids, limit, project);
   }
 
   async findByFile(
@@ -105,20 +106,23 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     const ids = metadataResults.observations.map(obs => obs.id);
 
-    return await this.rankAndHydrateForFile(filePath, ids, limit, sessions);
+    return await this.rankAndHydrateForFile(filePath, ids, limit, sessions, project);
   }
 
   private async rankAndHydrate(
     queryText: string,
     metadataIds: number[],
-    limit: number
+    limit: number,
+    queryProject?: string
   ): Promise<StrategySearchResult> {
     const chromaResults = await this.chromaSync.queryChroma(
       queryText,
       Math.min(metadataIds.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE)
     );
 
-    const rankedIds = this.intersectWithRanking(metadataIds, chromaResults.ids);
+    const rankedIds = this.intersectWithRanking(
+      metadataIds, chromaResults.ids, chromaResults.distances, queryProject
+    );
 
     if (rankedIds.length > 0) {
       const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
@@ -138,14 +142,17 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     filePath: string,
     metadataIds: number[],
     limit: number,
-    sessions: SessionSummarySearchResult[]
+    sessions: SessionSummarySearchResult[],
+    queryProject?: string
   ): Promise<{ observations: ObservationSearchResult[]; sessions: SessionSummarySearchResult[]; usedChroma: boolean }> {
     const chromaResults = await this.chromaSync.queryChroma(
       filePath,
       Math.min(metadataIds.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE)
     );
 
-    const rankedIds = this.intersectWithRanking(metadataIds, chromaResults.ids);
+    const rankedIds = this.intersectWithRanking(
+      metadataIds, chromaResults.ids, chromaResults.distances, queryProject
+    );
 
     if (rankedIds.length > 0) {
       const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
@@ -157,16 +164,56 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     return { observations: [], sessions, usedChroma: false };
   }
 
-  private intersectWithRanking(metadataIds: number[], chromaIds: number[]): number[] {
+  /**
+   * Intersect metadata IDs with Chroma IDs, rank by hybrid score.
+   * Falls back to Chroma order if scoring data unavailable.
+   */
+  private intersectWithRanking(
+    metadataIds: number[],
+    chromaIds: number[],
+    chromaDistances?: number[],
+    queryProject?: string
+  ): number[] {
     const metadataSet = new Set(metadataIds);
-    const rankedIds: number[] = [];
+    const intersected: number[] = [];
 
     for (const chromaId of chromaIds) {
-      if (metadataSet.has(chromaId) && !rankedIds.includes(chromaId)) {
-        rankedIds.push(chromaId);
+      if (metadataSet.has(chromaId) && !intersected.includes(chromaId)) {
+        intersected.push(chromaId);
       }
     }
 
-    return rankedIds;
+    if (intersected.length === 0 || !chromaDistances || !queryProject) {
+      return intersected;
+    }
+
+    // Build distance map: chromaId -> distance
+    const distanceMap = new Map<number, number>();
+    for (let i = 0; i < chromaIds.length; i++) {
+      distanceMap.set(chromaIds[i], chromaDistances[i] ?? 0);
+    }
+
+    // Hydrate observations for scoring dimensions
+    const observations = this.sessionStore.getObservationsByIds(intersected, {});
+    if (observations.length === 0) {
+      return intersected;
+    }
+
+    const scorer = new HybridScorer();
+    const scored = scorer.scoreAndRank(
+      observations.map(obs => ({
+        id: obs.id,
+        created_at_epoch: obs.created_at_epoch,
+        relevance_count: (obs as any).relevance_count ?? 0,
+        correctness: (obs as any).correctness ?? 'unverified',
+        project: obs.project,
+      })),
+      queryProject,
+      distanceMap
+    );
+
+    HybridScorer.logScoring(scored, 'search', 5);
+
+    return scored.map(s => s.id);
   }
 }
