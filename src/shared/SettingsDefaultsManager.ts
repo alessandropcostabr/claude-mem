@@ -46,8 +46,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: string;  
   CLAUDE_MEM_EXCLUDED_PROJECTS: string;  
   CLAUDE_MEM_FOLDER_MD_EXCLUDE: string;  
-  CLAUDE_MEM_SEMANTIC_INJECT: string;        
-  CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;  
+  CLAUDE_MEM_SEMANTIC_MAX_TOKENS: string;    // Max tokens for injected semantic context
+  CLAUDE_MEM_SEMANTIC_INJECT: string;
+  CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;
   CLAUDE_MEM_TIER_ROUTING_ENABLED: string;   
   CLAUDE_MEM_TIER_SIMPLE_MODEL: string;      
   CLAUDE_MEM_TIER_SUMMARY_MODEL: string;     
@@ -121,6 +122,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '3',  // Plan 05 Phase 8 — escalate to exit code 2 after N consecutive worker-unreachable hook invocations
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
+    CLAUDE_MEM_SEMANTIC_MAX_TOKENS: '3000',          // empirical: avg 108 tok/obs, covers 5×p95
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
     CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',           // Top-N most relevant observations to inject per prompt
     CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',         // Route observations to models by complexity
