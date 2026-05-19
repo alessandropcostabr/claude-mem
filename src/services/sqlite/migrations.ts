@@ -535,6 +535,32 @@ export const migration010: Migration = {
   }
 };
 
+export const migration011: Migration = {
+  version: 28,
+  up: (db: Database) => {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS file_read_tracking (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        has_observations INTEGER NOT NULL DEFAULT 0,
+        observation_count INTEGER NOT NULL DEFAULT 0,
+        action TEXT NOT NULL CHECK(action IN ('read', 'get_observations', 'skipped')),
+        file_size_bytes INTEGER,
+        created_at_epoch INTEGER NOT NULL
+      )
+    `);
+    db.run('CREATE INDEX IF NOT EXISTS idx_file_read_tracking_session ON file_read_tracking(session_id)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_file_read_tracking_created ON file_read_tracking(created_at_epoch DESC)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_file_read_tracking_action ON file_read_tracking(action)');
+
+    logger.debug('DB', '[migration011] Created file_read_tracking table with indexes');
+  },
+  down: (db: Database) => {
+    db.run('DROP TABLE IF EXISTS file_read_tracking');
+  }
+};
+
 export const migrations: Migration[] = [
   migration001,
   migration002,
@@ -545,5 +571,6 @@ export const migrations: Migration[] = [
   migration007,
   migration008,
   migration009,
-  migration010
+  migration010,
+  migration011
 ];
