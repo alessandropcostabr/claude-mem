@@ -163,3 +163,17 @@ We keep a reusable `reprocess-failed.cjs` for this now. A built-in `claude-mem s
 7. **Re-read OAuth token on 401**, not just on expiry (incident 2).
 
 server-beta is a big step up from sync — these are "we operated it hard for 10 days" notes, not blockers. Happy to share more anonymized data.
+
+---
+
+## Addendum (2026-05-22) — `anthropic` API-key provider may leak `claude-code-20250219`
+
+Tried to move off the OAuth `claude-subscription` provider onto a metered **`anthropic` API key** (`CLAUDE_MEM_SERVER_PROVIDER=anthropic`, `CLAUDE_MEM_ANTHROPIC_API_KEY`, model `claude-haiku-4-5-20251001`). Auth worked (no 401), but **~84% of generations failed** with what the server logs as `Anthropic bad request (400)`.
+
+Ruled out: key valid (direct `/v1/messages` = 200), model valid (`/v1/models` lists `claude-haiku-4-5-20251001`), `max_tokens` (Haiku max 64000, we send less), input length (payloads avg ~6 KB).
+
+**Likely cause:** the codebase hardcodes `claude-code-20250219` (the Claude Code internal model). Direct API test: `claude-haiku-4-5` → 200, but `claude-code-20250219` / `claude-3-5-sonnet-latest` / `claude-mem-context` → **404 `not_found_error`**. So a generation path under the `anthropic` provider seems to send `claude-code-20250219` (valid only on the subscription backend, 404 on the public API) instead of honoring `CLAUDE_MEM_SERVER_MODEL`. Caveat: the server reports it as `400`, but model-not-found is `404` — the error classification may be imprecise, and the server doesn't log the raw provider response (even at `LOG_LEVEL=debug`), so this isn't 100% confirmed.
+
+**Asks:** (a) ensure the `anthropic` provider always uses `CLAUDE_MEM_SERVER_MODEL` (no `claude-code-*` leak); (b) surface the raw provider error body in logs/job `last_error` (right now every failure is an opaque "400"); (c) distinguish 400 vs 404 in the classification.
+
+**Current setup:** stayed on `claude-subscription`, but switched model **Haiku → Sonnet 4.6** — with `SESSION_POLICY=end-of-session` the volume is low enough that **Sonnet now fits the quota at `concurrency=1` (0× 429)**. So end-of-session didn't just fix Haiku; it made Sonnet viable.
