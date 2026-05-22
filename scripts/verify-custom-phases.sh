@@ -26,6 +26,7 @@ JSON=false
 FAILURES=0
 WARNINGS=0
 RESULTS=()
+IDLE=false   # true quando não houve atividade na janela de 24h (máquina ociosa)
 
 for arg in "$@"; do
   case "$arg" in
@@ -46,27 +47,45 @@ check_token() {
   fi
 }
 
-check_db_recent() {
-  local query="$1" label="$2" min_expected="${3:-1}"
-  if [ ! -f "$DB_PATH" ]; then
-    RESULTS+=("FAIL|data|$label|DB not found at $DB_PATH")
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  local count
-  count=$(bun -e "
+db_count() {
+  # Executa a query e devolve a contagem (0 em qualquer erro)
+  local query="$1"
+  bun -e "
     const Database = require('bun:sqlite').Database;
     const db = new Database('$DB_PATH', {readonly:true});
     try {
       const row = db.prepare(\`$query\`).get();
       console.log(row?.cnt ?? 0);
     } catch(e) { console.log(0); }
-  " 2>/dev/null || echo 0)
+  " 2>/dev/null || echo 0
+}
+
+# check_db_recent QUERY LABEL [min_expected] [zero_sev]
+#   zero_sev = fail (default) | warn
+#     fail: 0 registros durante atividade é bloqueante (sinal core: observations/sessions)
+#     warn: 0 registros é só aviso (sinal opcional: feedback/bandit/c4/summaries)
+#   Quando a máquina está ociosa (IDLE), 0 registros é ESPERADO e vira SKIP — nunca FAIL.
+check_db_recent() {
+  local query="$1" label="$2" min_expected="${3:-1}" zero_sev="${4:-fail}"
+  if [ ! -f "$DB_PATH" ]; then
+    RESULTS+=("FAIL|data|$label|DB not found at $DB_PATH")
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local count
+  count=$(db_count "$query")
   if [ "$count" -ge "$min_expected" ]; then
     RESULTS+=("OK|data|$label|$count records (last 24h)")
   elif [ "$count" -eq 0 ]; then
-    RESULTS+=("FAIL|data|$label|0 records in last 24h")
-    FAILURES=$((FAILURES + 1))
+    if $IDLE; then
+      RESULTS+=("SKIP|data|$label|sem atividade na janela (idle) — esperado")
+    elif [ "$zero_sev" = "warn" ]; then
+      RESULTS+=("WARN|data|$label|0 records (sinal opcional)")
+      WARNINGS=$((WARNINGS + 1))
+    else
+      RESULTS+=("FAIL|data|$label|0 records in last 24h")
+      FAILURES=$((FAILURES + 1))
+    fi
   else
     RESULTS+=("WARN|data|$label|only $count records (expected >= $min_expected)")
     WARNINGS=$((WARNINGS + 1))
@@ -132,35 +151,45 @@ check_token "$WORKER" "normalizeRecency" "Phase 8 (Scoring)"
 # 2. DATA VERIFICATION — recent writes in DB
 # ========================================
 
-# Observations being created
+# Sentinela de atividade: houve QUALQUER observação na janela de 24h?
+# Se 0, a máquina estava ociosa (ex.: check rodou antes do trabalho do dia) — então
+# 0 registros nos demais checks é esperado e não deve gerar FAIL "DO NOT DEPLOY".
+if [ -f "$DB_PATH" ]; then
+  ACTIVITY=$(db_count "SELECT COUNT(*) as cnt FROM observations WHERE created_at_epoch > (strftime('%s','now') - 86400) * 1000")
+  [ "$ACTIVITY" -eq 0 ] && IDLE=true
+fi
+
+# Observations being created — sinal CORE (0 durante atividade = problema real)
 check_db_recent \
   "SELECT COUNT(*) as cnt FROM observations WHERE created_at_epoch > (strftime('%s','now') - 86400) * 1000" \
-  "Observations (last 24h)" 5
+  "Observations (last 24h)" 5 fail
 
-# Feedback signals flowing
-check_db_recent \
-  "SELECT COUNT(*) as cnt FROM observation_feedback WHERE created_at_epoch > (strftime('%s','now') - 86400) * 1000" \
-  "Feedback signals (last 24h)" 10
-
-# Bandit arms being updated
-check_db_recent \
-  "SELECT COUNT(*) as cnt FROM bandit_arms WHERE updated_at_epoch > (strftime('%s','now') - 86400) * 1000" \
-  "Bandit arms updated (last 24h)" 1
-
-# FileReadTracking recording (known issue: feature active but no context_acceptance events yet)
-check_db_recent \
-  "SELECT COUNT(*) as cnt FROM file_read_tracking WHERE created_at_epoch > (strftime('%s','now') - 86400) * 1000" \
-  "FileReadTracking (last 24h)" 1
-
-# Sessions active
+# Sessions active — sinal OPCIONAL (legado): o rastreamento de sessão migrou para o
+# Postgres do server-beta (tabela server_sessions) no cutover de 19/05/2026. A sdk_sessions
+# local ficou congelada por design — fonte de verdade agora é o PG do server-beta.
 check_db_recent \
   "SELECT COUNT(*) as cnt FROM sdk_sessions WHERE started_at_epoch > (strftime('%s','now') - 86400) * 1000" \
-  "Active sessions (last 24h)" 1
+  "Active sessions (last 24h)" 1 warn
 
-# Summaries generated
+# Feedback signals flowing — sinal OPCIONAL (reações podem legitimamente ser 0)
+check_db_recent \
+  "SELECT COUNT(*) as cnt FROM observation_feedback WHERE created_at_epoch > (strftime('%s','now') - 86400) * 1000" \
+  "Feedback signals (last 24h)" 10 warn
+
+# Bandit arms being updated — sinal OPCIONAL
+check_db_recent \
+  "SELECT COUNT(*) as cnt FROM bandit_arms WHERE updated_at_epoch > (strftime('%s','now') - 86400) * 1000" \
+  "Bandit arms updated (last 24h)" 1 warn
+
+# FileReadTracking — sinal OPCIONAL (feature ativa mas sem context_acceptance events ainda)
+check_db_recent \
+  "SELECT COUNT(*) as cnt FROM file_read_tracking WHERE created_at_epoch > (strftime('%s','now') - 86400) * 1000" \
+  "FileReadTracking (last 24h)" 1 warn
+
+# Summaries generated — sinal OPCIONAL
 check_db_recent \
   "SELECT COUNT(*) as cnt FROM session_summaries WHERE created_at_epoch > (strftime('%s','now') - 86400) * 1000" \
-  "Summaries (last 24h)" 1
+  "Summaries (last 24h)" 1 warn
 
 # ========================================
 # 3. API VERIFICATION — worker responding
@@ -209,11 +238,13 @@ else
     case "$status" in
       OK)   printf "  ✅ %-30s %s\n" "$label" "$detail" ;;
       WARN) printf "  ⚠️  %-30s %s\n" "$label" "$detail" ;;
+      SKIP) printf "  ⏭️  %-30s %s\n" "$label" "$detail" ;;
       FAIL) printf "  ❌ %-30s %s\n" "$label" "$detail" ;;
     esac
   done
 
   echo ""
+  $IDLE && echo "ℹ️  Sem atividade na janela de 24h — checks de escrita pulados (idle)."
   if [ "$FAILURES" -gt 0 ]; then
     echo "❌ RESULT: $FAILURES failures, $WARNINGS warnings — DO NOT DEPLOY"
   elif [ "$WARNINGS" -gt 0 ]; then
