@@ -147,7 +147,7 @@ We keep a reusable `reprocess-failed.cjs` for this now. A built-in `claude-mem s
 **Metrics (so the suggestions aren't hand-wavy):**
 - Lifetime: ~20k jobs completed, ~39k observations in Postgres.
 - Per-event volume: ~3,000–6,500 jobs/day across the week.
-- After `end-of-session`: generation tracks **session-close rate (~70/day)** instead of tool-call rate (~3,500/day). [Exact 24h before/after to follow.]
+- After `end-of-session` (measured 2026-05-22): LLM-generating jobs dropped to **72 `session_summary`/day**, vs **~3,500–6,500 `agent_event`/day** under per-event (18/05: 6,526 · 19/05: 4,810 · 20/05: 2,514) — a **~50–90× cut in LLM calls**. The ~3,574 tool events/day still arrive but are skipped at ingest (not generated).
 - Drain throughput on Haiku @ concurrency=3: ~1,700 jobs/hour observed while clearing a 7k backlog, no 429.
 
 ---
