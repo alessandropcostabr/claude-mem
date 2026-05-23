@@ -28,8 +28,14 @@ export interface ContextConfig {
   showLastMessage: boolean;
 }
 
+// Observation/summary ids are SQLite rowids (number) in the worker runtime and
+// Postgres uuids (string) in the server-beta runtime. The renderers only use
+// the id for Set membership and as the agent-facing reference token, so the
+// union is safe across both.
+export type ObservationId = number | string;
+
 export interface Observation {
-  id: number;
+  id: ObservationId;
   memory_session_id: string;
   platform_source?: string;
   type: string;
@@ -47,7 +53,7 @@ export interface Observation {
 }
 
 export interface SessionSummary {
-  id: number;
+  id: ObservationId;
   memory_session_id: string;
   platform_source?: string;
   request: string | null;
