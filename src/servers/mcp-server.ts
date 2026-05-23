@@ -193,6 +193,18 @@ async function callWorkerAPIPatch(
   }
 }
 
+/**
+ * Validate an observation id before composing a governance PATCH path.
+ * Throws on non-positive-integer ids to avoid malformed requests like `/undefined/...`.
+ */
+function parseObservationId(args: any, toolName: string): number {
+  const id = Number(args?.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new Error(`${toolName}: "id" must be a positive integer`);
+  }
+  return id;
+}
+
 async function verifyWorkerConnection(): Promise<boolean> {
   try {
     const response = await workerHttpRequest('/api/health');
@@ -580,7 +592,11 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     inputSchema: {
       type: 'object',
       properties: {
-        type: { type: 'string', description: 'Observation type: discovery, decision, feature, bugfix, change, pattern, architecture' },
+        type: {
+          type: 'string',
+          enum: ['discovery', 'decision', 'feature', 'bugfix', 'change', 'pattern', 'architecture'],
+          description: 'Observation type: discovery, decision, feature, bugfix, change, pattern, architecture'
+        },
         title: { type: 'string', description: 'Short title' },
         subtitle: { type: 'string', description: 'Subtitle/summary' },
         narrative: { type: 'string', description: 'Full narrative text (required)' },
@@ -608,7 +624,8 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['id']
     },
     handler: async (args: any) => {
-      return await callWorkerAPIPatch(`/api/memory/observations/${args.id}/confirm`);
+      const id = parseObservationId(args, 'mem_confirm');
+      return await callWorkerAPIPatch(`/api/memory/observations/${id}/confirm`);
     }
   },
   {
@@ -622,7 +639,8 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['id']
     },
     handler: async (args: any) => {
-      return await callWorkerAPIPatch(`/api/memory/observations/${args.id}/deprecate`);
+      const id = parseObservationId(args, 'mem_deprecate');
+      return await callWorkerAPIPatch(`/api/memory/observations/${id}/deprecate`);
     }
   },
   {
@@ -636,7 +654,8 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['id']
     },
     handler: async (args: any) => {
-      return await callWorkerAPIPatch(`/api/memory/observations/${args.id}/flag`);
+      const id = parseObservationId(args, 'mem_flag');
+      return await callWorkerAPIPatch(`/api/memory/observations/${id}/flag`);
     }
   },
   {

@@ -130,21 +130,21 @@ export class MemoryRoutes extends BaseRouteHandler {
     if (id === null) return;
 
     const db = this.dbManager.getSessionStore().db;
-    const obs = db.prepare('SELECT id, status, correctness FROM observations WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    // Atomic conditional update avoids a TOCTOU race between check and write.
+    const result = db.prepare(`
+      UPDATE observations SET correctness = 'confirmed', correctness_at = datetime('now')
+      WHERE id = ? AND status != 'deprecated'
+    `).run(id);
 
-    if (!obs) {
-      this.notFound(res, `Observation #${id} not found`);
-      return;
-    }
-    if (obs.status === 'deprecated') {
+    if (result.changes === 0) {
+      const obs = db.prepare('SELECT id FROM observations WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+      if (!obs) {
+        this.notFound(res, `Observation #${id} not found`);
+        return;
+      }
       this.badRequest(res, `Observation #${id} is deprecated`);
       return;
     }
-
-    db.prepare(`
-      UPDATE observations SET correctness = 'confirmed', correctness_at = datetime('now')
-      WHERE id = ?
-    `).run(id);
 
     logger.info('MEMORY', 'Observation confirmed', { id });
     res.json({ success: true, id, correctness: 'confirmed' });
@@ -155,18 +155,20 @@ export class MemoryRoutes extends BaseRouteHandler {
     if (id === null) return;
 
     const db = this.dbManager.getSessionStore().db;
-    const obs = db.prepare('SELECT id, status FROM observations WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    // Atomic conditional update avoids a TOCTOU race between check and write.
+    const result = db.prepare(
+      "UPDATE observations SET status = 'deprecated' WHERE id = ? AND status != 'deprecated'"
+    ).run(id);
 
-    if (!obs) {
-      this.notFound(res, `Observation #${id} not found`);
-      return;
-    }
-    if (obs.status === 'deprecated') {
+    if (result.changes === 0) {
+      const obs = db.prepare('SELECT id FROM observations WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+      if (!obs) {
+        this.notFound(res, `Observation #${id} not found`);
+        return;
+      }
       this.badRequest(res, `Observation #${id} is already deprecated`);
       return;
     }
-
-    db.prepare("UPDATE observations SET status = 'deprecated' WHERE id = ?").run(id);
 
     logger.info('MEMORY', 'Observation deprecated', { id });
     res.json({ success: true, id, status: 'deprecated' });
@@ -177,18 +179,20 @@ export class MemoryRoutes extends BaseRouteHandler {
     if (id === null) return;
 
     const db = this.dbManager.getSessionStore().db;
-    const obs = db.prepare('SELECT id, status FROM observations WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    // Atomic conditional update avoids a TOCTOU race between check and write.
+    const result = db.prepare(
+      "UPDATE observations SET conflict_flag = 1 WHERE id = ? AND status != 'deprecated'"
+    ).run(id);
 
-    if (!obs) {
-      this.notFound(res, `Observation #${id} not found`);
-      return;
-    }
-    if (obs.status === 'deprecated') {
+    if (result.changes === 0) {
+      const obs = db.prepare('SELECT id FROM observations WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+      if (!obs) {
+        this.notFound(res, `Observation #${id} not found`);
+        return;
+      }
       this.badRequest(res, `Observation #${id} is deprecated`);
       return;
     }
-
-    db.prepare('UPDATE observations SET conflict_flag = 1 WHERE id = ?').run(id);
 
     logger.info('MEMORY', 'Observation flagged', { id });
     res.json({ success: true, id, conflict_flag: 1 });

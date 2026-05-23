@@ -57,7 +57,8 @@ interface ObservationRow {
 function deduplicateObservations(
   observations: ObservationRow[],
   targetPath: string,
-  displayLimit: number
+  displayLimit: number,
+  queryProject: string
 ): ObservationRow[] {
   // Phase 1: Keep only the most recent observation per session
   const seenSessions = new Set<string>();
@@ -87,7 +88,8 @@ function deduplicateObservations(
   });
 
   // Phase 3: Apply hybrid scoring (recency + authority + coherence + specificity)
-  const queryProject = scored[0]?.obs.project || '';
+  // queryProject is the active project from the hook context, not inferred from
+  // candidates — a same-path match from another project must not become the reference.
   const hybridScorer = new HybridScorer();
   const hybridScored = scored.map(({ obs, specificityScore }) => {
     const dims = hybridScorer.computeScore({
@@ -268,7 +270,7 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
     }
   }
 
-  const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
+  const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT, context.primary);
   if (dedupedObservations.length === 0) {
     return null;
   }

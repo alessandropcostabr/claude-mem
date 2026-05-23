@@ -422,12 +422,20 @@ export class SearchRoutes extends BaseRouteHandler {
       lines.push('');
     }
 
-    const maxTokens = parseInt(SettingsDefaultsManager.get('CLAUDE_MEM_SEMANTIC_MAX_TOKENS')) || 3000;
+    const settings = getCachedSettings();
+    const parsedMaxTokens = Number.parseInt(String(settings.CLAUDE_MEM_SEMANTIC_MAX_TOKENS ?? ''), 10);
+    const maxTokens = Number.isFinite(parsedMaxTokens) && parsedMaxTokens > 0 ? parsedMaxTokens : 3000;
     const maxChars = maxTokens * 4;
+    const truncationNotice = '\n\n[contexto truncado por CLAUDE_MEM_SEMANTIC_MAX_TOKENS]';
     let contextText = lines.join('\n');
     if (contextText.length > maxChars) {
-      contextText = contextText.slice(0, maxChars) + '\n\n[contexto truncado por CLAUDE_MEM_SEMANTIC_MAX_TOKENS]';
-      logger.debug('SEARCH', `Context truncated: ${contextText.length} chars > ${maxChars} limit`);
+      const originalLength = contextText.length;
+      // Cap the notice itself so the result never exceeds maxChars even when
+      // maxChars < truncationNotice.length (tiny CLAUDE_MEM_SEMANTIC_MAX_TOKENS).
+      const notice = truncationNotice.slice(0, maxChars);
+      const allowedChars = Math.max(0, maxChars - notice.length);
+      contextText = contextText.slice(0, allowedChars) + notice;
+      logger.debug('SEARCH', `Context truncated: ${originalLength} chars > ${maxChars} limit`);
     }
     res.json({ context: contextText, count: observations.length });
   });

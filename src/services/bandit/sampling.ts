@@ -5,7 +5,7 @@
 
 function normalRandom(): number {
   // Box-Muller transform
-  const u1 = Math.random();
+  const u1 = Math.random() || Number.MIN_VALUE; // avoid log(0)
   const u2 = Math.random();
   return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
 }

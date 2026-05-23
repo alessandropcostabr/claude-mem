@@ -81,7 +81,14 @@ setInterval(() => {
 
 
 def get_active_version():
-    versions = sorted(CACHE_DIR.iterdir(), key=lambda p: p.name) if CACHE_DIR.exists() else []
+    def parse_ver(name: str):
+        try:
+            return tuple(int(x) for x in name.split("."))
+        except ValueError:
+            return ()
+
+    candidates = [p for p in CACHE_DIR.iterdir() if parse_ver(p.name)] if CACHE_DIR.exists() else []
+    versions = sorted(candidates, key=lambda p: parse_ver(p.name))
     versions = [v for v in versions if (v / "server.ts").exists()]
     return versions[-1] if versions else None
 
@@ -111,15 +118,17 @@ def apply_patch(server_ts: Path, check_only=False) -> bool:
         print("  → Patch needed (--check mode, not applying).")
         return False
 
-    if not status['message_reaction'] or not status['allowed_updates']:
+    if not status['message_reaction']:
         if STICKER_END not in content:
             print("  ERROR: sticker block not found — server.ts layout may have changed.")
             return False
+        content = content.replace(STICKER_END, STICKER_WITH_REACTION, 1)
+
+    if not status['allowed_updates']:
         if BOT_START_ORIGINAL not in content:
             print("  ERROR: bot.start block not found — server.ts layout may have changed.")
             return False
-        content = content.replace(STICKER_END, STICKER_WITH_REACTION)
-        content = content.replace(BOT_START_ORIGINAL, BOT_START_PATCHED)
+        content = content.replace(BOT_START_ORIGINAL, BOT_START_PATCHED, 1)
 
     if not status['keepalive']:
         if MCP_CONNECT_ANCHOR not in content:
