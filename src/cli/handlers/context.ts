@@ -37,6 +37,7 @@ async function injectFromServerBeta(
   runtime: ServerBetaRuntimeContext,
   input: NormalizedHookInput,
   project: string,
+  cwd: string,
   showTerminalOutput: boolean,
   port: number,
 ): Promise<HookResult> {
@@ -50,6 +51,7 @@ async function injectFromServerBeta(
     const result = await runtime.client.injectContext({
       projectId: runtime.projectId,
       project,
+      cwd,
       forHuman: false,
     });
     additionalContext = (result.context ?? '').trim();
@@ -74,6 +76,7 @@ async function injectFromServerBeta(
       const colored = await runtime.client.injectContext({
         projectId: runtime.projectId,
         project,
+        cwd,
         forHuman: true,
       });
       coloredTimeline = (colored.context ?? '').trim();
@@ -106,7 +109,7 @@ export const contextHandler: EventHandler = {
 
     const runtime = resolveRuntimeContext();
     if (runtime.runtime === 'server-beta') {
-      return injectFromServerBeta(runtime, input, context.primary, showTerminalOutput, port);
+      return injectFromServerBeta(runtime, input, context.primary, cwd, showTerminalOutput, port);
     }
 
     const projectsParam = context.allProjects.join(',');

@@ -29,14 +29,18 @@ export function renderAgentHeader(project: string): string[] {
   ];
 }
 
-export function renderAgentLegend(): string[] {
+export function renderAgentLegend(fetchByIdSupported: boolean = true): string[] {
   const mode = ModeManager.getInstance().getActiveMode();
   const typeLegendItems = mode.observation_types.map(t => `${t.emoji}${t.id}`).join(' ');
+
+  const fetchLine = fetchByIdSupported
+    ? `Fetch details: get_observations([IDs]) | Search: mem-search skill`
+    : `Fetch details: observation_search / mem-search skill`;
 
   return [
     `Legend: 🎯session ${typeLegendItems}`,
     `Format: ID TIME TYPE TITLE`,
-    `Fetch details: get_observations([IDs]) | Search: mem-search skill`,
+    fetchLine,
     ''
   ];
 }
