@@ -2,6 +2,7 @@
 import type {
   ContextConfig,
   Observation,
+  ObservationId,
   SessionSummary,
   TokenEconomics,
   PriorMessages,
@@ -132,7 +133,7 @@ export function renderAgentFullObservation(
 }
 
 export function renderAgentSummaryItem(
-  summary: { id: number; request: string | null },
+  summary: { id: ObservationId; request: string | null },
   formattedTime: string
 ): string[] {
   return [

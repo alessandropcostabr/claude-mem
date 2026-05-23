@@ -67,9 +67,43 @@ export const sessionInitHandler: EventHandler = {
           contentSessionId: sessionId,
           project,
         });
-        // Server-beta does not currently support the same context-injection
-        // protocol as the worker. Skip semantic injection in server-beta mode
-        // until the server-beta context endpoint exists.
+
+        // Semantic injection ← PG via /v1/context (FTS over the prompt). Gated
+        // by CLAUDE_MEM_SEMANTIC_INJECT and a minimum prompt length, same as
+        // the worker path. Best-effort: any failure just skips injection — the
+        // session already started, so we never fall back to the worker here.
+        const sbSettings = loadFromFileOnce();
+        const sbSemanticInject =
+          String(sbSettings.CLAUDE_MEM_SEMANTIC_INJECT).toLowerCase() === 'true';
+        if (sbSemanticInject && prompt.length >= 20 && prompt !== '[media prompt]') {
+          const sbLimit = parseInt(String(sbSettings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5'), 10) || 5;
+          try {
+            const semantic = await runtime.client.contextObservations({
+              projectId: runtime.projectId,
+              query: prompt,
+              limit: sbLimit,
+            });
+            const semanticContext = (semantic.context ?? '').trim();
+            if (semanticContext) {
+              logger.info('HOOK', 'session-init: server-beta semantic injection', {
+                contentSessionId: sessionId,
+                count: semantic.observations?.length ?? 0,
+              });
+              return {
+                continue: true,
+                suppressOutput: true,
+                hookSpecificOutput: {
+                  hookEventName: 'UserPromptSubmit',
+                  additionalContext: `## Relevant Past Work (semantic match)\n\n${semanticContext}`,
+                },
+              };
+            }
+          } catch (semanticError: unknown) {
+            logger.warn('HOOK', 'session-init: server-beta semantic injection failed', {
+              error: semanticError instanceof Error ? semanticError.message : String(semanticError),
+            });
+          }
+        }
         return { continue: true, suppressOutput: true };
       } catch (error: unknown) {
         if (isServerBetaClientError(error) && error.isFallbackEligible()) {

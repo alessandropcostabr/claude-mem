@@ -2,6 +2,7 @@
 import type {
   ContextConfig,
   Observation,
+  ObservationId,
   TokenEconomics,
   PriorMessages,
 } from '../types.js';
@@ -146,7 +147,7 @@ export function renderHumanFullObservation(
 }
 
 export function renderHumanSummaryItem(
-  summary: { id: number; request: string | null },
+  summary: { id: ObservationId; request: string | null },
   formattedTime: string
 ): string[] {
   const summaryTitle = `${summary.request || 'Session started'} (${formattedTime})`;
