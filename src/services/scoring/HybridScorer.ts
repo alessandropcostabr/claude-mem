@@ -66,6 +66,11 @@ export class HybridScorer {
   constructor(weights?: Partial<ScoringWeights>) {
     this.weights = { ...DEFAULT_WEIGHTS, ...weights };
     const sum = this.weights.semantic + this.weights.recency + this.weights.authority + this.weights.coherence;
+    if (!Number.isFinite(sum) || sum <= 0) {
+      logger.warn('SCORING', `Invalid weight sum (${sum}), falling back to defaults`);
+      this.weights = { ...DEFAULT_WEIGHTS };
+      return;
+    }
     if (Math.abs(sum - 1.0) > 0.01) {
       logger.warn('SCORING', `Weights sum to ${sum.toFixed(2)}, normalizing to 1.0`);
       this.weights.semantic /= sum;
@@ -100,15 +105,15 @@ export class HybridScorer {
    * Exponential decay: exp(-age_days / half_life)
    */
   static normalizeRecency(createdAtEpoch: number): number {
-    const ageDays = (Date.now() - createdAtEpoch) / (1000 * 60 * 60 * 24);
-    return Math.exp(-ageDays / RECENCY_HALF_LIFE_DAYS);
+    const ageDays = Math.max(0, (Date.now() - createdAtEpoch) / (1000 * 60 * 60 * 24));
+    return Math.max(0, Math.min(1, Math.exp(-ageDays / RECENCY_HALF_LIFE_DAYS)));
   }
 
   /**
    * Authority = min(relevance/max, 1.0) + confirmed bonus, capped at 1.0
    */
   static normalizeAuthority(relevanceCount: number, correctness: string): number {
-    const base = Math.min(relevanceCount / AUTHORITY_MAX_RELEVANCE, 1.0);
+    const base = Math.max(0, Math.min(relevanceCount / AUTHORITY_MAX_RELEVANCE, 1.0));
     const bonus = correctness === 'confirmed' ? CONFIRMED_BONUS : 0;
     return Math.min(base + bonus, 1.0);
   }
@@ -185,7 +190,7 @@ export class HybridScorer {
    * Log scoring decision for a ranked set.
    */
   static logScoring(scored: ScoredResult[], context: string, limit?: number): void {
-    const display = limit ? scored.slice(0, limit) : scored;
+    const display = limit === undefined ? scored : scored.slice(0, Math.max(0, limit));
     for (let i = 0; i < display.length; i++) {
       const s = display[i];
       logger.info('SCORING', `${context} obs=#${s.id} sem=${s.dimensions.semantic.toFixed(2)} rec=${s.dimensions.recency.toFixed(2)} auth=${s.dimensions.authority.toFixed(2)} coh=${s.dimensions.coherence.toFixed(2)} final=${s.score.toFixed(3)} rank=${i + 1}/${scored.length}`);
