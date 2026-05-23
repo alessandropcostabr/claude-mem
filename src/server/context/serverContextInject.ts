@@ -44,6 +44,10 @@ const SERVER_DEFAULT_CONFIG: ContextConfig = {
   fullObservationField: 'narrative',
   showLastSummary: true,
   showLastMessage: false,
+  // Server-beta ids are Postgres uuids and get_observations is worker-only
+  // (numeric ids), so by-id drilldown would hard-fail; point the timeline at
+  // search instead.
+  fetchByIdSupported: false,
 };
 
 function metaRecord(obs: PostgresObservation): Record<string, unknown> {
@@ -105,6 +109,10 @@ export interface RenderServerContextInput {
   summaries: PostgresObservation[];
   limit?: number;
   forHuman?: boolean;
+  // Client cwd, used only by the human (colored terminal) render to relativize
+  // file paths. Fleet-wide observations from other repos stay absolute; same-repo
+  // files render project-relative. Empty when the client doesn't send it.
+  cwd?: string;
 }
 
 export interface RenderServerContextResult {
@@ -162,9 +170,9 @@ export function renderServerContext(input: RenderServerContextInput): RenderServ
       observations,
       summaries,
       config,
-      // No local transcripts/session on the server: cwd is only used by the
-      // human file-relativizer and getPriorSessionMessages (gated off here).
-      '',
+      // cwd is only used by the human file-relativizer (getPriorSessionMessages
+      // is gated off here). Empty when the client doesn't send one.
+      input.cwd ?? '',
       undefined,
       forHuman,
     );

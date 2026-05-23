@@ -26,6 +26,13 @@ export interface ContextConfig {
   fullObservationField: 'narrative' | 'facts';
   showLastSummary: boolean;
   showLastMessage: boolean;
+
+  // When false, the timeline omits the `get_observations([IDs])` drilldown hint
+  // and points only at search. The server-beta runtime sets this: its ids are
+  // Postgres uuids and `get_observations` is worker-only (numeric ids), so the
+  // by-id path would hard-fail there — search (observation_search/mem-search)
+  // is the working drilldown. Defaults to true (worker behavior) when omitted.
+  fetchByIdSupported?: boolean;
 }
 
 // Observation/summary ids are SQLite rowids (number) in the worker runtime and
