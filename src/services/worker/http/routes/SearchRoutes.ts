@@ -430,8 +430,11 @@ export class SearchRoutes extends BaseRouteHandler {
     let contextText = lines.join('\n');
     if (contextText.length > maxChars) {
       const originalLength = contextText.length;
-      const allowedChars = Math.max(0, maxChars - truncationNotice.length);
-      contextText = contextText.slice(0, allowedChars) + truncationNotice;
+      // Cap the notice itself so the result never exceeds maxChars even when
+      // maxChars < truncationNotice.length (tiny CLAUDE_MEM_SEMANTIC_MAX_TOKENS).
+      const notice = truncationNotice.slice(0, maxChars);
+      const allowedChars = Math.max(0, maxChars - notice.length);
+      contextText = contextText.slice(0, allowedChars) + notice;
       logger.debug('SEARCH', `Context truncated: ${originalLength} chars > ${maxChars} limit`);
     }
     res.json({ context: contextText, count: observations.length });
