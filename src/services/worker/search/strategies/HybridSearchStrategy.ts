@@ -183,7 +183,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       }
     }
 
-    if (intersected.length === 0 || !chromaDistances || !queryProject) {
+    if (intersected.length === 0 || !chromaDistances) {
       return intersected;
     }
 
@@ -208,7 +208,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
         correctness: (obs as any).correctness ?? 'unverified',
         project: obs.project,
       })),
-      queryProject,
+      queryProject ?? '',
       distanceMap
     );
 
