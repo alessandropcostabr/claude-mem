@@ -134,6 +134,8 @@ export class PostgresObservationRepository {
     projectId: string;
     teamId: string;
     serverSessionId?: string | null;
+    kind?: string | null;
+    excludeKind?: string | null;
     limit?: number;
   }): Promise<PostgresObservation[]> {
     const result = await this.client.query<ObservationRow>(
@@ -142,10 +144,19 @@ export class PostgresObservationRepository {
         WHERE project_id = $1
           AND team_id = $2
           AND ($3::text IS NULL OR server_session_id = $3)
+          AND ($4::text IS NULL OR kind = $4)
+          AND ($5::text IS NULL OR kind <> $5)
         ORDER BY created_at DESC
-        LIMIT $4
+        LIMIT $6
       `,
-      [input.projectId, input.teamId, input.serverSessionId ?? null, input.limit ?? 100]
+      [
+        input.projectId,
+        input.teamId,
+        input.serverSessionId ?? null,
+        input.kind ?? null,
+        input.excludeKind ?? null,
+        input.limit ?? 100,
+      ]
     );
     return result.rows.map(mapObservationRow);
   }

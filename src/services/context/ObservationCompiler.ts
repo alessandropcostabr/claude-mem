@@ -1,19 +1,24 @@
 
-import path from 'path';
-import { existsSync, readFileSync } from 'fs';
 import { SessionStore } from '../sqlite/SessionStore.js';
-import { logger } from '../../utils/logger.js';
-import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
-import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import type {
   ContextConfig,
   Observation,
   SessionSummary,
-  SummaryTimelineItem,
-  TimelineItem,
-  PriorMessages,
 } from './types.js';
 import { SUMMARY_LOOKAHEAD } from './types.js';
+
+// SessionStore-backed query functions live here. The SessionStore-free timeline
+// assembly (buildTimeline, getPriorSessionMessages, assembleContext, ...) lives
+// in timeline-assembly.ts and is re-exported below for backward compatibility.
+export {
+  buildTimeline,
+  getPriorSessionMessages,
+  prepareSummariesForTimeline,
+  getFullObservationIds,
+  extractPriorMessages,
+  assembleContext,
+  renderEmptyState,
+} from './timeline-assembly.js';
 
 export function queryObservations(
   db: SessionStore,
