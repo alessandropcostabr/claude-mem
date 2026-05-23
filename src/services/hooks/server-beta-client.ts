@@ -201,6 +201,46 @@ export interface ServerBetaInjectContextResponse {
   count: number;
 }
 
+// /api/search←PG — fetch full observations by id (MCP `get_observations`).
+// Routes to POST /v1/observations, scoped by api-key team/project.
+export interface ServerBetaGetObservationsRequest {
+  projectId: string;
+  ids: string[];
+}
+
+export interface ServerBetaGetObservationsResponse {
+  observations: Array<{
+    id: string;
+    projectId: string;
+    content: string;
+    [key: string]: unknown;
+  }>;
+}
+
+// /api/search←PG — timeline ← Postgres (MCP `timeline`). Routes to
+// POST /v1/timeline. Server renders the timeline around the FTS hits and
+// returns the same {context, count} shape as /v1/context/inject.
+export interface ServerBetaTimelineRequest {
+  projectId: string;
+  // Optional: empty/absent → recent-by-project fallback on the server.
+  query?: string;
+  project?: string;
+  // Anchor (observation uuid) windows the timeline around that observation,
+  // mirroring the worker `timeline(anchor=...)` flow. depthBefore/After bound
+  // the window.
+  anchor?: string;
+  depthBefore?: number;
+  depthAfter?: number;
+  limit?: number;
+  forHuman?: boolean;
+  cwd?: string;
+}
+
+export interface ServerBetaTimelineResponse {
+  context: string;
+  count: number;
+}
+
 // Phase 8 — generation job status, scoped by api-key team/project.
 export interface ServerBetaJobStatusResponse {
   generationJob: {
@@ -292,6 +332,41 @@ export class ServerBetaClient {
       '/v1/context/inject',
       {
         projectId: input.projectId,
+        ...(input.project !== undefined ? { project: input.project } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.forHuman !== undefined ? { forHuman: input.forHuman } : {}),
+        ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+      },
+    );
+  }
+
+  // /api/search←PG — MCP `get_observations`. Fetches full observations by id
+  // from PG via POST /v1/observations, scoped server-side by team/project.
+  async getObservations(
+    input: ServerBetaGetObservationsRequest,
+  ): Promise<ServerBetaGetObservationsResponse> {
+    return this.request<ServerBetaGetObservationsResponse>(
+      'POST',
+      '/v1/observations',
+      {
+        projectId: input.projectId,
+        ids: input.ids,
+      },
+    );
+  }
+
+  // /api/search←PG — MCP `timeline`. POSTs to /v1/timeline, which FTS-searches
+  // for hits and renders the timeline around them server-side, returning the
+  // ready-to-display {context, count} string (same shape as /v1/context/inject).
+  async searchTimeline(
+    input: ServerBetaTimelineRequest,
+  ): Promise<ServerBetaTimelineResponse> {
+    return this.request<ServerBetaTimelineResponse>(
+      'POST',
+      '/v1/timeline',
+      {
+        projectId: input.projectId,
+        ...(input.query !== undefined ? { query: input.query } : {}),
         ...(input.project !== undefined ? { project: input.project } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
         ...(input.forHuman !== undefined ? { forHuman: input.forHuman } : {}),

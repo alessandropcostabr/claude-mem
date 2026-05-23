@@ -180,6 +180,60 @@ export class PostgresObservationRepository {
     );
     return result.rows.map(mapObservationRow);
   }
+
+  // Timeline window around a specific observation (server-beta anchor). The
+  // anchor id is a uuid; we resolve its created_at, then take `before` rows up
+  // to and including it plus `after` newer rows, returned chronologically.
+  // Tenant-scoped: a foreign anchor id resolves to null → empty window.
+  async listAroundAnchor(input: {
+    anchorId: string;
+    projectId: string;
+    teamId: string;
+    before?: number;
+    after?: number;
+    excludeKind?: string | null;
+  }): Promise<PostgresObservation[]> {
+    const anchor = await queryOne<{ created_at: Date }>(
+      this.client,
+      'SELECT created_at FROM observations WHERE id = $1 AND project_id = $2 AND team_id = $3',
+      [input.anchorId, input.projectId, input.teamId]
+    );
+    if (!anchor) return [];
+    const before = input.before ?? 3;
+    const after = input.after ?? 3;
+    // Use the (created_at, id) tuple as a deterministic cursor so timestamp
+    // ties don't make the window nondeterministic: the anchor always satisfies
+    // (created_at, id) <= itself (so it is included), and before/after never
+    // overlap on equal timestamps.
+    const beforeRows = await this.client.query<ObservationRow>(
+      `
+        SELECT * FROM observations
+        WHERE project_id = $1
+          AND team_id = $2
+          AND ($6::text IS NULL OR kind <> $6)
+          AND (created_at, id) <= ($3::timestamptz, $4::text)
+        ORDER BY created_at DESC, id DESC
+        LIMIT $5
+      `,
+      [input.projectId, input.teamId, anchor.created_at, input.anchorId, before + 1, input.excludeKind ?? null]
+    );
+    const afterRows = await this.client.query<ObservationRow>(
+      `
+        SELECT * FROM observations
+        WHERE project_id = $1
+          AND team_id = $2
+          AND ($6::text IS NULL OR kind <> $6)
+          AND (created_at, id) > ($3::timestamptz, $4::text)
+        ORDER BY created_at ASC, id ASC
+        LIMIT $5
+      `,
+      [input.projectId, input.teamId, anchor.created_at, input.anchorId, after, input.excludeKind ?? null]
+    );
+    // beforeRows is newest-first (includes the anchor); reverse to chronological
+    // order, then append the newer rows.
+    const ordered = [...beforeRows.rows.reverse(), ...afterRows.rows];
+    return ordered.map(mapObservationRow);
+  }
 }
 
 export class PostgresObservationSourcesRepository {

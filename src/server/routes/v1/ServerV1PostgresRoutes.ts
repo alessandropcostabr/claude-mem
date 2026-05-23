@@ -992,6 +992,145 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         }
       },
     ));
+
+    // /api/search←PG — fetch full observations by id. Mirrors the worker's
+    // POST /api/observations/batch (MCP `get_observations`) but reads PG,
+    // scoped by team_id + project_id. Unknown ids are silently skipped (the
+    // tool contract returns whatever exists); we never leak cross-tenant rows
+    // because getByIdForScope filters on team_id + project_id.
+    app.post('/v1/observations', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().min(1).optional(),
+        ids: z.array(z.string().min(1)).min(1).max(100),
+      }),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId) return;
+        const projectId = body.projectId ?? req.authContext?.projectId ?? null;
+        if (!projectId) {
+          res.status(400).json({
+            error: 'ValidationError',
+            message: 'projectId is required (no project bound to the API key)',
+          });
+          return;
+        }
+        if (!this.ensureProjectAllowed(req, res, projectId)) return;
+        try {
+          const repo = new PostgresObservationRepository(this.options.pool);
+          // Dedup ids while preserving request order, then resolve each one
+          // scoped to the caller's tenant. Missing ids drop out.
+          const seen = new Set<string>();
+          const orderedIds = body.ids.filter(id => {
+            if (seen.has(id)) return false;
+            seen.add(id);
+            return true;
+          });
+          const fetched = await Promise.all(
+            orderedIds.map(id => repo.getByIdForScope({ id, projectId, teamId })),
+          );
+          const observations = fetched.filter(
+            (o): o is NonNullable<typeof o> => o !== null,
+          );
+          await this.auditRead(req, 'observation.read', null, projectId, {
+            mode: 'observations_by_ids',
+            requestedIds: orderedIds,
+            resultCount: observations.length,
+            observationIds: observations.map(o => o.id),
+          });
+          res.status(200).json({
+            observations: observations.map(serializeObservation),
+          });
+        } catch (error) {
+          this.handleDbError(error, res, 'observation.by_ids');
+        }
+      },
+    ));
+
+    // /api/search←PG — timeline ← Postgres. Reuses the /v1/search FTS path to
+    // find hits, then renders the SAME timeline as /v1/context/inject around
+    // those hits (plus recent session summaries) via the shared assembler.
+    // Returns the {context, count} shape /v1/context/inject returns. With an
+    // empty query it degrades to recent-by-project (like /v1/context/inject).
+    app.post('/v1/timeline', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().min(1).optional(),
+        // Optional: empty/absent → recent-by-project fallback.
+        query: z.string().optional(),
+        project: z.string().min(1).optional(),
+        anchor: z.string().min(1).optional(),
+        depthBefore: z.number().int().nonnegative().max(50).optional(),
+        depthAfter: z.number().int().nonnegative().max(50).optional(),
+        limit: z.number().int().positive().max(200).optional(),
+        forHuman: z.boolean().optional(),
+        cwd: z.string().optional(),
+      }),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId) return;
+        const projectId = body.projectId ?? req.authContext?.projectId ?? null;
+        if (!projectId) {
+          res.status(400).json({
+            error: 'ValidationError',
+            message: 'projectId is required (no project bound to the API key)',
+          });
+          return;
+        }
+        if (!this.ensureProjectAllowed(req, res, projectId)) return;
+        try {
+          const repo = new PostgresObservationRepository(this.options.pool);
+          const obsLimit = body.limit ?? 50;
+          const query = typeof body.query === 'string' ? body.query.trim() : '';
+          const anchor = typeof body.anchor === 'string' ? body.anchor.trim() : '';
+
+          // Anchor wins: window around a specific observation (the documented
+          // 3-step flow). Else hits drive the window via FTS; with neither we
+          // fall back to recent-by-project.
+          const observations = anchor.length > 0
+            ? await repo.listAroundAnchor({
+                anchorId: anchor,
+                projectId,
+                teamId,
+                before: body.depthBefore,
+                after: body.depthAfter,
+                excludeKind: 'summary',
+              })
+            : query.length > 0
+            ? await repo.search({ projectId, teamId, query, limit: obsLimit })
+            : await repo.listByProject({
+                projectId,
+                teamId,
+                excludeKind: 'summary',
+                limit: obsLimit,
+              });
+          // Always pull recent session summaries for the timeline header,
+          // matching /v1/context/inject.
+          const summaries = await repo.listByProject({
+            projectId,
+            teamId,
+            kind: 'summary',
+            limit: SERVER_CONTEXT_SESSION_COUNT + 1,
+          });
+          const { context, count } = renderServerContext({
+            project: body.project ?? projectId,
+            observations,
+            summaries,
+            limit: obsLimit,
+            forHuman: body.forHuman ?? false,
+            cwd: body.cwd,
+          });
+          await this.auditRead(req, 'observation.read', null, projectId, {
+            mode: 'timeline',
+            query,
+            limit: obsLimit,
+            resultCount: count,
+            observationIds: observations.map(o => o.id),
+          });
+          res.status(200).json({ context, count });
+        } catch (error) {
+          this.handleDbError(error, res, 'observation.timeline');
+        }
+      },
+    ));
   }
 
   private async auditRead(
