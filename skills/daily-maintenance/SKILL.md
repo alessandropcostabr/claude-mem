@@ -134,7 +134,9 @@ const Database = require(\"bun:sqlite\").Database;
 const db = new Database(\"$HOME/.claude-mem/claude-mem.db\");
 const row = db.prepare(\"PRAGMA wal_checkpoint(TRUNCATE)\").get();
 console.log(\"checkpoint:\", JSON.stringify(row));
-const size = require(\"fs\").statSync(\"$HOME/.claude-mem/claude-mem.db-wal\").size;
+const fs = require(\"fs\");
+const walPath = \"$HOME/.claude-mem/claude-mem.db-wal\";
+const size = fs.existsSync(walPath) ? fs.statSync(walPath).size : 0;
 console.log(\"WAL after:\", (size/1024).toFixed(0) + \"KB\");
 db.close();
 "'
