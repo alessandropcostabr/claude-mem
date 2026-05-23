@@ -44,10 +44,10 @@ const SERVER_DEFAULT_CONFIG: ContextConfig = {
   fullObservationField: 'narrative',
   showLastSummary: true,
   showLastMessage: false,
-  // Server-beta ids are Postgres uuids and get_observations is worker-only
-  // (numeric ids), so by-id drilldown would hard-fail; point the timeline at
-  // search instead.
-  fetchByIdSupported: false,
+  // get_observations now routes to POST /v1/observations in server-beta mode
+  // (fetch by Postgres uuid), so by-id drilldown works — expose fetchable uuids
+  // in the injected timeline instead of pointing at search.
+  fetchByIdSupported: true,
 };
 
 function metaRecord(obs: PostgresObservation): Record<string, unknown> {
