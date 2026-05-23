@@ -192,6 +192,8 @@ export interface ServerBetaInjectContextRequest {
   limit?: number;
   // true → ANSI-colored human timeline for terminal display.
   forHuman?: boolean;
+  // Client cwd; lets the human render relativize same-repo file paths.
+  cwd?: string;
 }
 
 export interface ServerBetaInjectContextResponse {
@@ -293,6 +295,7 @@ export class ServerBetaClient {
         ...(input.project !== undefined ? { project: input.project } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
         ...(input.forHuman !== undefined ? { forHuman: input.forHuman } : {}),
+        ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
       },
     );
   }

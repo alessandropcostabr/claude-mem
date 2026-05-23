@@ -949,6 +949,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         project: z.string().min(1).optional(),
         limit: z.number().int().positive().max(200).optional(),
         forHuman: z.boolean().optional(),
+        cwd: z.string().optional(),
       }),
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
@@ -977,6 +978,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             summaries,
             limit: obsLimit,
             forHuman: body.forHuman ?? false,
+            cwd: body.cwd,
           });
           await this.auditRead(req, 'observation.read', null, body.projectId, {
             mode: 'context_inject',
