@@ -99,6 +99,7 @@ export class FileReadTracking {
     const readsEnriched = (this.db.prepare(`
       SELECT COUNT(*) AS cnt FROM file_read_tracking
       WHERE created_at_epoch >= ?
+        AND has_observations = 1
         AND action IN ('auto_enriched', 'explicit_fetch', 'get_observations')
     `).get(since) as { cnt: number }).cnt;
 
@@ -114,7 +115,7 @@ export class FileReadTracking {
     const savedBytes = (this.db.prepare(`
       SELECT COALESCE(SUM(file_size_bytes), 0) AS total FROM file_read_tracking
       WHERE created_at_epoch >= ?
-        AND action IN ('auto_enriched', 'explicit_fetch', 'get_observations')
+        AND action = 'auto_enriched'
         AND file_size_bytes IS NOT NULL
     `).get(since) as { total: number }).total;
 
