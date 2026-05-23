@@ -26,10 +26,23 @@ export interface ContextConfig {
   fullObservationField: 'narrative' | 'facts';
   showLastSummary: boolean;
   showLastMessage: boolean;
+
+  // When false, the timeline omits the `get_observations([IDs])` drilldown hint
+  // and points only at search. The server-beta runtime sets this: its ids are
+  // Postgres uuids and `get_observations` is worker-only (numeric ids), so the
+  // by-id path would hard-fail there — search (observation_search/mem-search)
+  // is the working drilldown. Defaults to true (worker behavior) when omitted.
+  fetchByIdSupported?: boolean;
 }
 
+// Observation/summary ids are SQLite rowids (number) in the worker runtime and
+// Postgres uuids (string) in the server-beta runtime. The renderers only use
+// the id for Set membership and as the agent-facing reference token, so the
+// union is safe across both.
+export type ObservationId = number | string;
+
 export interface Observation {
-  id: number;
+  id: ObservationId;
   memory_session_id: string;
   platform_source?: string;
   type: string;
@@ -47,7 +60,7 @@ export interface Observation {
 }
 
 export interface SessionSummary {
-  id: number;
+  id: ObservationId;
   memory_session_id: string;
   platform_source?: string;
   request: string | null;

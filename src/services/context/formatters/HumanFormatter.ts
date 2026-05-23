@@ -2,6 +2,7 @@
 import type {
   ContextConfig,
   Observation,
+  ObservationId,
   TokenEconomics,
   PriorMessages,
 } from '../types.js';
@@ -49,12 +50,15 @@ export function renderHumanColumnKey(): string[] {
   ];
 }
 
-export function renderHumanContextIndex(): string[] {
+export function renderHumanContextIndex(fetchByIdSupported: boolean = true): string[] {
+  const drilldownLine = fetchByIdSupported
+    ? `${colors.dim}  - Fetch by ID: get_observations([IDs]) for observations visible in this index${colors.reset}`
+    : `${colors.dim}  - Search: observation_search / mem-search skill (by-id fetch is not available in server-beta mode)${colors.reset}`;
   return [
     `${colors.dim}Context Index: This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.${colors.reset}`,
     '',
     `${colors.dim}When you need implementation details, rationale, or debugging context:${colors.reset}`,
-    `${colors.dim}  - Fetch by ID: get_observations([IDs]) for observations visible in this index${colors.reset}`,
+    drilldownLine,
     `${colors.dim}  - Search history: Use the mem-search skill for past decisions, bugs, and deeper research${colors.reset}`,
     `${colors.dim}  - Trust this index over re-reading code for past decisions and learnings${colors.reset}`,
     ''
@@ -146,7 +150,7 @@ export function renderHumanFullObservation(
 }
 
 export function renderHumanSummaryItem(
-  summary: { id: number; request: string | null },
+  summary: { id: ObservationId; request: string | null },
   formattedTime: string
 ): string[] {
   const summaryTitle = `${summary.request || 'Session started'} (${formattedTime})`;

@@ -26,6 +26,10 @@ import { PostgresServerSessionsRepository } from '../../../storage/postgres/serv
 import type { ServerSessionGenerationPolicy } from '../../runtime/SessionGenerationPolicy.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
+import {
+  renderServerContext,
+  SERVER_CONTEXT_SESSION_COUNT,
+} from '../../context/serverContextInject.js';
 
 const SOURCE_ADAPTER_DEFAULT = 'api';
 
@@ -927,6 +931,64 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           });
         } catch (error) {
           this.handleDbError(error, res, 'observation.context');
+        }
+      },
+    ));
+
+    // Server-beta SessionStart injection (timeline ← Postgres). Mirrors the
+    // worker's GET /api/context/inject, but reads recent observations +
+    // session summaries from PG and renders the SAME timeline via the shared
+    // SessionStore-free assembler. This is what lets a client run stateless
+    // (no local SQLite/worker): forward → PG, inject ← PG. Unlike /v1/search
+    // and /v1/context it takes NO query — scoping is recent-by-project.
+    app.post('/v1/context/inject', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().min(1),
+        // Human-readable project label for the timeline header. Defaults to
+        // projectId when the client doesn't send one.
+        project: z.string().min(1).optional(),
+        limit: z.number().int().positive().max(200).optional(),
+        forHuman: z.boolean().optional(),
+        cwd: z.string().optional(),
+      }),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId) return;
+        if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        try {
+          const repo = new PostgresObservationRepository(this.options.pool);
+          const obsLimit = body.limit ?? 50;
+          const [observations, summaries] = await Promise.all([
+            repo.listByProject({
+              projectId: body.projectId,
+              teamId,
+              excludeKind: 'summary',
+              limit: obsLimit,
+            }),
+            repo.listByProject({
+              projectId: body.projectId,
+              teamId,
+              kind: 'summary',
+              limit: SERVER_CONTEXT_SESSION_COUNT + 1,
+            }),
+          ]);
+          const { context, count } = renderServerContext({
+            project: body.project ?? body.projectId,
+            observations,
+            summaries,
+            limit: obsLimit,
+            forHuman: body.forHuman ?? false,
+            cwd: body.cwd,
+          });
+          await this.auditRead(req, 'observation.read', null, body.projectId, {
+            mode: 'context_inject',
+            limit: obsLimit,
+            resultCount: count,
+            observationIds: observations.map(o => o.id),
+          });
+          res.status(200).json({ context, count });
+        } catch (error) {
+          this.handleDbError(error, res, 'observation.context_inject');
         }
       },
     ));

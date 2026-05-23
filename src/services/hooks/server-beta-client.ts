@@ -182,6 +182,25 @@ export interface ServerBetaContextObservationsResponse {
   context: string;
 }
 
+// Server-beta SessionStart injection — recent timeline ← Postgres, rendered
+// server-side into the same string the worker's /api/context/inject returns.
+// Unlike search/context this takes NO query; scoping is recent-by-project.
+export interface ServerBetaInjectContextRequest {
+  projectId: string;
+  // Human-readable label for the timeline header (defaults to projectId).
+  project?: string;
+  limit?: number;
+  // true → ANSI-colored human timeline for terminal display.
+  forHuman?: boolean;
+  // Client cwd; lets the human render relativize same-repo file paths.
+  cwd?: string;
+}
+
+export interface ServerBetaInjectContextResponse {
+  context: string;
+  count: number;
+}
+
 // Phase 8 — generation job status, scoped by api-key team/project.
 export interface ServerBetaJobStatusResponse {
   generationJob: {
@@ -259,6 +278,25 @@ export class ServerBetaClient {
       'POST',
       '/v1/context',
       this.buildSearchPayload(input),
+    );
+  }
+
+  // SessionStart context injection. POSTs to `/v1/context/inject`, which reads
+  // recent observations + summaries for the project and renders the timeline
+  // server-side. Returns the ready-to-inject string so the client stays dumb.
+  async injectContext(
+    input: ServerBetaInjectContextRequest,
+  ): Promise<ServerBetaInjectContextResponse> {
+    return this.request<ServerBetaInjectContextResponse>(
+      'POST',
+      '/v1/context/inject',
+      {
+        projectId: input.projectId,
+        ...(input.project !== undefined ? { project: input.project } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.forHuman !== undefined ? { forHuman: input.forHuman } : {}),
+        ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+      },
     );
   }
 
