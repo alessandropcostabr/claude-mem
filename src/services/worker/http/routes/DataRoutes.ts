@@ -3,6 +3,7 @@ import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
+import { createHash } from 'crypto';
 import { logger } from '../../../../utils/logger.js';
 import { getPackageRoot, paths } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
@@ -75,6 +76,11 @@ const importSchema = z.object({
   prompts: z.array(z.unknown()).optional(),
 }).passthrough();
 
+const telegramReactionSchema = z.object({
+  emoji: z.string().max(32).optional(),
+  userId: z.string().max(128).optional(),
+}).passthrough();
+
 export class DataRoutes extends BaseRouteHandler {
   constructor(
     private paginationHelper: PaginationHelper,
@@ -106,7 +112,7 @@ export class DataRoutes extends BaseRouteHandler {
     app.post('/api/processing', validateBody(setProcessingSchema), this.handleSetProcessing.bind(this));
 
     app.post('/api/import', validateBody(importSchema), this.handleImport.bind(this));
-    app.post('/api/metrics/telegram-reaction', this.handleTrackTelegramReaction.bind(this));
+    app.post('/api/metrics/telegram-reaction', validateBody(telegramReactionSchema), this.handleTrackTelegramReaction.bind(this));
   }
 
   private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
@@ -287,7 +293,7 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   private handleTrackTelegramReaction = this.wrapHandler((req: Request, res: Response): void => {
-    const { emoji, userId } = req.body;
+    const { emoji, userId } = req.body as z.infer<typeof telegramReactionSchema>;
     const db = this.dbManager.getSessionStore().db;
 
     const recentObs = db.prepare(
@@ -299,8 +305,13 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
+    // Pseudonymize the Telegram user ID before persisting/logging it (PII).
+    const anonymizeUserId = (value?: string) =>
+      value ? createHash('sha256').update(value).digest('hex').slice(0, 12) : 'unknown';
+    const anonymizedUserId = anonymizeUserId(userId);
+
     const now = Date.now();
-    const source = `telegram:${emoji || '\u{1F44D}'}:${userId || 'unknown'}`;
+    const source = `telegram:${emoji || '\u{1F44D}'}:${anonymizedUserId}`;
     const insert = db.prepare(
       'INSERT INTO observation_feedback (observation_id, signal, source, created_at_epoch) VALUES (?, ?, ?, ?)'
     );
@@ -308,17 +319,19 @@ export class DataRoutes extends BaseRouteHandler {
       'UPDATE observations SET relevance_count = relevance_count + 1 WHERE id = ?'
     );
 
+    let recorded = 0;
     for (const obs of recentObs) {
       try {
         insert.run(obs.id, 'telegram_reaction', source, now);
         updateRelevance.run(obs.id);
+        recorded++;
       } catch (e) {
         logger.debug('FEEDBACK', 'Failed to record telegram_reaction', { obsId: obs.id, error: e instanceof Error ? e.message : String(e) });
       }
     }
 
-    logger.info('FEEDBACK', `Recorded telegram_reaction for ${recentObs.length} recent observations`, { emoji, userId });
-    res.json({ success: true, recorded: recentObs.length });
+    logger.info('FEEDBACK', `Recorded telegram_reaction for ${recorded} recent observations`, { emoji, userId: anonymizedUserId });
+    res.json({ success: true, recorded });
   });
 
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string } {
