@@ -98,6 +98,9 @@ import { CorpusStore } from './worker/knowledge/CorpusStore.js';
 import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from './worker/knowledge/KnowledgeAgent.js';
 
+import { BanditEngine } from './bandit/BanditEngine.js';
+import { FileReadTracking } from './sqlite/metrics/FileReadTracking.js';
+
 export interface StatusOutput {
   continue: true;
   suppressOutput: true;
@@ -135,6 +138,9 @@ export class WorkerService implements WorkerRef {
   private completionHandler: SessionCompletionHandler;
   private corpusStore: CorpusStore;
 
+  private banditEngine: BanditEngine;
+  private fileReadTracking: FileReadTracking | null = null;
+
   private searchRoutes: SearchRoutes | null = null;
 
   private chromaMcpManager: ChromaMcpManager | null = null;
@@ -170,6 +176,7 @@ export class WorkerService implements WorkerRef {
       this.dbManager,
     );
     this.corpusStore = new CorpusStore();
+    this.banditEngine = new BanditEngine();
 
     setIngestContext({
       sessionManager: this.sessionManager,
@@ -218,6 +225,9 @@ export class WorkerService implements WorkerRef {
 
     this.registerSignalHandlers();
   }
+
+  get bandit(): BanditEngine { return this.banditEngine; }
+  get fileTracking(): FileReadTracking | null { return this.fileReadTracking; }
 
   private registerSignalHandlers(): void {
     configureSupervisorSignalHandlers(async () => {
@@ -353,6 +363,10 @@ export class WorkerService implements WorkerRef {
 
       logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
+
+      this.banditEngine.init(this.dbManager.getConnection());
+      this.fileReadTracking = new FileReadTracking(this.dbManager.getConnection());
+      logger.info('WORKER', 'BanditEngine and FileReadTracking initialized');
 
       const sweepResult = this.dbManager.getSessionStore().db.prepare(`
         UPDATE pending_messages
