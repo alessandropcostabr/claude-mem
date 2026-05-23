@@ -47,8 +47,11 @@ export class FeedbackRecorder {
           if (obs?.generated_by_model) {
             const armId = `${obs.type}:${obs.generated_by_model}`;
             const weight = SIGNAL_REWARD_WEIGHT[signal] ?? 1;
-            // Weighted reward: context_referenced (1.0) >> search (0.5) >> inject (0.3)
-            this.banditEngine.recordReward(MODEL_PER_OBS_TYPE, armId, weight >= 0.5 ? 1 : 0);
+            // Probabilistic reward: higher-quality signals more likely to reward.
+            // context_referenced (1.0) >> search (0.5) >> inject (0.3).
+            // Avoids a binary threshold that would always reward inject hits with 0.
+            const reward: 0 | 1 = Math.random() < weight ? 1 : 0;
+            this.banditEngine.recordReward(MODEL_PER_OBS_TYPE, armId, reward);
           }
         }
       } catch (e) {
