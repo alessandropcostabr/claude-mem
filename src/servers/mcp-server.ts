@@ -29,8 +29,10 @@ import {
   isServerBetaClientError,
   type ServerBetaAddObservationRequest,
   type ServerBetaContextObservationsRequest,
+  type ServerBetaGetObservationsRequest,
   type ServerBetaRecordEventRequest,
   type ServerBetaSearchObservationsRequest,
+  type ServerBetaTimelineRequest,
 } from '../services/hooks/server-beta-client.js';
 import {
   selectRuntime,
@@ -246,6 +248,45 @@ function requireServerBetaForObservationTool(toolName: string): ServerBetaAvaila
   return resolution;
 }
 
+// /api/search←PG — graceful, NON-throwing variant used by the dual-mode
+// search/timeline/get_observations tools. Returns the available server-beta
+// context, or null when the runtime is "worker" OR server-beta config is
+// incomplete. In both null cases the caller falls back to the worker /api/*
+// path, so a half-configured server-beta install still works via the worker.
+function tryServerBetaContext(toolName: string): ServerBetaAvailable | null {
+  const resolution = resolveServerBetaToolContext();
+  if (!resolution) {
+    // runtime === 'worker' — use the worker path silently.
+    return null;
+  }
+  if (!resolution.available) {
+    logger.warn(
+      'SYSTEM',
+      `${toolName}: server-beta selected but unavailable; falling back to worker path`,
+      { reason: resolution.reason },
+    );
+    return null;
+  }
+  return resolution;
+}
+
+// /api/search←PG — when a server-beta call fails in a fallback-eligible way
+// (transport/timeout/5xx/429/missing key) we drop to the worker path instead
+// of surfacing the error, so a flaky server never breaks the tool. A real 4xx
+// (client bug) is surfaced via formatToolError. Returns true when the caller
+// should fall back to the worker.
+function shouldFallBackToWorker(error: unknown, toolName: string): boolean {
+  if (isServerBetaClientError(error) && error.isFallbackEligible()) {
+    logger.warn(
+      'SYSTEM',
+      `${toolName}: server-beta call failed (${error.kind}); falling back to worker path`,
+      { status: error.status },
+    );
+    return true;
+  }
+  return false;
+}
+
 interface ObservationAddArgs {
   projectId?: string;
   serverSessionId?: string | null;
@@ -391,6 +432,113 @@ async function handleObservationGenerationStatus(
   }
 }
 
+// /api/search←PG — dual-mode `search`. In server-beta mode this reads the
+// server-beta PG via /v1/search (no local worker/SQLite needed); otherwise it
+// keeps the existing worker /api/search path. On a fallback-eligible
+// server-beta failure it transparently drops to the worker.
+async function handleSearchTool(
+  args: Record<string, any>,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  const ctx = tryServerBetaContext('search');
+  if (ctx) {
+    try {
+      const query = typeof args?.query === 'string' ? args.query : '';
+      if (query.trim().length === 0) {
+        // /v1/search requires a non-empty query; an empty search has no PG
+        // equivalent here, so surface a clear tool error rather than guessing.
+        throw new Error('search: "query" is required in server-beta mode');
+      }
+      const projectId = args.project && String(args.project).trim().length > 0
+        ? String(args.project)
+        : ctx.projectId;
+      const request: ServerBetaSearchObservationsRequest = {
+        projectId,
+        query,
+        ...(args.limit !== undefined ? { limit: Number(args.limit) } : {}),
+      };
+      const response = await ctx.client.searchObservations(request);
+      return formatJsonResult(response);
+    } catch (error) {
+      if (!shouldFallBackToWorker(error, 'search')) {
+        return formatToolError(error);
+      }
+      // fall through to worker path
+    }
+  }
+  const endpoint = TOOL_ENDPOINT_MAP['search'];
+  return await callWorkerAPI(endpoint, args);
+}
+
+// /api/search←PG — dual-mode `timeline`. Server-beta renders the timeline
+// around the FTS hits in PG and returns a ready-to-display string; worker mode
+// keeps /api/timeline. The server-beta response is {context, count}; we surface
+// `context` as the tool's text so the contract (content[].text) is preserved.
+async function handleTimelineTool(
+  args: Record<string, any>,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  const ctx = tryServerBetaContext('timeline');
+  if (ctx) {
+    try {
+      const projectId = args.project && String(args.project).trim().length > 0
+        ? String(args.project)
+        : ctx.projectId;
+      // server-beta ids are uuids and the worker `anchor` is numeric, so we
+      // do not forward `anchor`; the server windows around the FTS hits for
+      // `query`. With no query it degrades to recent-by-project.
+      const query = typeof args?.query === 'string' ? args.query : undefined;
+      const request: ServerBetaTimelineRequest = {
+        projectId,
+        ...(query !== undefined ? { query } : {}),
+        ...(args.limit !== undefined ? { limit: Number(args.limit) } : {}),
+      };
+      const response = await ctx.client.searchTimeline(request);
+      return {
+        content: [{ type: 'text' as const, text: response.context ?? '' }],
+      };
+    } catch (error) {
+      if (!shouldFallBackToWorker(error, 'timeline')) {
+        return formatToolError(error);
+      }
+      // fall through to worker path
+    }
+  }
+  const endpoint = TOOL_ENDPOINT_MAP['timeline'];
+  return await callWorkerAPI(endpoint, args);
+}
+
+// /api/search←PG — dual-mode `get_observations`. Server-beta fetches full
+// observations by id from PG via /v1/observations; worker mode keeps
+// /api/observations/batch. ids are passed through as strings (PG uuids);
+// worker mode still receives whatever the client sent.
+async function handleGetObservationsTool(
+  args: Record<string, any>,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  const ctx = tryServerBetaContext('get_observations');
+  if (ctx) {
+    try {
+      const rawIds = Array.isArray(args?.ids) ? args.ids : [];
+      const ids = rawIds
+        .map((id: unknown) => (id === null || id === undefined ? '' : String(id)))
+        .filter((id: string) => id.trim().length > 0);
+      if (ids.length === 0) {
+        throw new Error('get_observations: "ids" must be a non-empty array');
+      }
+      const request: ServerBetaGetObservationsRequest = {
+        projectId: ctx.projectId,
+        ids,
+      };
+      const response = await ctx.client.getObservations(request);
+      return formatJsonResult(response);
+    } catch (error) {
+      if (!shouldFallBackToWorker(error, 'get_observations')) {
+        return formatToolError(error);
+      }
+      // fall through to worker path
+    }
+  }
+  return await callWorkerAPIPost('/api/observations/batch', args);
+}
+
 async function ensureWorkerConnection(): Promise<boolean> {
   if (await verifyWorkerConnection()) {
     return true;
@@ -474,10 +622,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: true
     },
-    handler: async (args: any) => {
-      const endpoint = TOOL_ENDPOINT_MAP['search'];
-      return await callWorkerAPI(endpoint, args);
-    }
+    handler: async (args: any) => handleSearchTool(args ?? {})
   },
   {
     name: 'timeline',
@@ -493,10 +638,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: true
     },
-    handler: async (args: any) => {
-      const endpoint = TOOL_ENDPOINT_MAP['timeline'];
-      return await callWorkerAPI(endpoint, args);
-    }
+    handler: async (args: any) => handleTimelineTool(args ?? {})
   },
   {
     name: 'get_observations',
@@ -513,9 +655,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['ids'],
       additionalProperties: true
     },
-    handler: async (args: any) => {
-      return await callWorkerAPIPost('/api/observations/batch', args);
-    }
+    handler: async (args: any) => handleGetObservationsTool(args ?? {})
   },
   // Phase 8 — observation_* tools backed by server-beta REST core.
   // These are the canonical names. memory_* tools below are kept as
