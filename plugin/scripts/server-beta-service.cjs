@@ -179,19 +179,19 @@ ${s.stack}`:` ${s.message}`;else if(this.getLevel()===0&&typeof s=="object")try{
         SELECT * FROM observations
         WHERE project_id = $1
           AND team_id = $2
-          AND ($5::text IS NULL OR kind <> $5)
-          AND created_at <= $3
-        ORDER BY created_at DESC
-        LIMIT $4
-      `,[e.projectId,e.teamId,r.created_at,n+1,e.excludeKind??null]),a=await this.client.query(`
+          AND ($6::text IS NULL OR kind <> $6)
+          AND (created_at, id) <= ($3::timestamptz, $4::text)
+        ORDER BY created_at DESC, id DESC
+        LIMIT $5
+      `,[e.projectId,e.teamId,r.created_at,e.anchorId,n+1,e.excludeKind??null]),a=await this.client.query(`
         SELECT * FROM observations
         WHERE project_id = $1
           AND team_id = $2
-          AND ($5::text IS NULL OR kind <> $5)
-          AND created_at > $3
-        ORDER BY created_at ASC
-        LIMIT $4
-      `,[e.projectId,e.teamId,r.created_at,i,e.excludeKind??null]);return[...s.rows.reverse(),...a.rows].map(_o)}},Bn=class{constructor(e){this.client=e}client;async addSource(e){if(!await Q(this.client,"SELECT id FROM observations WHERE id = $1 AND project_id = $2 AND team_id = $3",[e.observationId,e.projectId,e.teamId]))throw new Error("observation_id does not exist");let n=e.sourceType==="agent_event"?e.agentEventId??e.sourceId:null;if(e.sourceType==="agent_event"){if(n!==e.sourceId)throw new Error("agent_event source_id must equal agent_event_id");await SV(this.client,e.sourceId,e.projectId,e.teamId)}else e.sourceType==="session_summary"&&!e.generationJobId?await bn(this.client,e.sourceId,e.projectId,e.teamId):e.sourceType==="observation_reindex"&&!e.generationJobId&&await wV(this.client,e.sourceId,e.projectId,e.teamId);e.generationJobId&&await EV(this.client,{generationJobId:e.generationJobId,projectId:e.projectId,teamId:e.teamId,sourceType:e.sourceType,sourceId:e.sourceId,agentEventId:n});let i=await Q(this.client,`
+          AND ($6::text IS NULL OR kind <> $6)
+          AND (created_at, id) > ($3::timestamptz, $4::text)
+        ORDER BY created_at ASC, id ASC
+        LIMIT $5
+      `,[e.projectId,e.teamId,r.created_at,e.anchorId,i,e.excludeKind??null]);return[...s.rows.reverse(),...a.rows].map(_o)}},Bn=class{constructor(e){this.client=e}client;async addSource(e){if(!await Q(this.client,"SELECT id FROM observations WHERE id = $1 AND project_id = $2 AND team_id = $3",[e.observationId,e.projectId,e.teamId]))throw new Error("observation_id does not exist");let n=e.sourceType==="agent_event"?e.agentEventId??e.sourceId:null;if(e.sourceType==="agent_event"){if(n!==e.sourceId)throw new Error("agent_event source_id must equal agent_event_id");await SV(this.client,e.sourceId,e.projectId,e.teamId)}else e.sourceType==="session_summary"&&!e.generationJobId?await bn(this.client,e.sourceId,e.projectId,e.teamId):e.sourceType==="observation_reindex"&&!e.generationJobId&&await wV(this.client,e.sourceId,e.projectId,e.teamId);e.generationJobId&&await EV(this.client,{generationJobId:e.generationJobId,projectId:e.projectId,teamId:e.teamId,sourceType:e.sourceType,sourceId:e.sourceId,agentEventId:n});let i=await Q(this.client,`
         INSERT INTO observation_sources (
           id, observation_id, agent_event_id, generation_job_id,
           source_type, source_id, metadata
