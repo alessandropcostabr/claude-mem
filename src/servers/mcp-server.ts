@@ -479,16 +479,26 @@ async function handleTimelineTool(
   const ctx = tryServerBetaContext('timeline');
   if (ctx) {
     try {
-      const projectId = args.project && String(args.project).trim().length > 0
+      // F1: projectId must be the tenant uuid (ctx.projectId). args.project is
+      // only a display label → send it as `project`, never as projectId (doing
+      // so produced a 403, which is not fallback-eligible → hard error).
+      const projectId = ctx.projectId;
+      const projectLabel = typeof args?.project === 'string' && args.project.trim().length > 0
         ? String(args.project)
-        : ctx.projectId;
-      // server-beta ids are uuids and the worker `anchor` is numeric, so we
-      // do not forward `anchor`; the server windows around the FTS hits for
-      // `query`. With no query it degrades to recent-by-project.
+        : undefined;
       const query = typeof args?.query === 'string' ? args.query : undefined;
+      // F2: forward the anchor (uuid) + depths so timeline(anchor=...) windows
+      // around the observation server-side instead of silently dropping it.
+      const anchor = args?.anchor !== undefined && args?.anchor !== null && String(args.anchor).trim().length > 0
+        ? String(args.anchor)
+        : undefined;
       const request: ServerBetaTimelineRequest = {
         projectId,
+        ...(projectLabel !== undefined ? { project: projectLabel } : {}),
         ...(query !== undefined ? { query } : {}),
+        ...(anchor !== undefined ? { anchor } : {}),
+        ...(args.depth_before !== undefined ? { depthBefore: Number(args.depth_before) } : {}),
+        ...(args.depth_after !== undefined ? { depthAfter: Number(args.depth_after) } : {}),
         ...(args.limit !== undefined ? { limit: Number(args.limit) } : {}),
       };
       const response = await ctx.client.searchTimeline(request);

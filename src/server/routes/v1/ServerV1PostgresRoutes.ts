@@ -1057,6 +1057,9 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         // Optional: empty/absent → recent-by-project fallback.
         query: z.string().optional(),
         project: z.string().min(1).optional(),
+        anchor: z.string().min(1).optional(),
+        depthBefore: z.number().int().nonnegative().max(50).optional(),
+        depthAfter: z.number().int().nonnegative().max(50).optional(),
         limit: z.number().int().positive().max(200).optional(),
         forHuman: z.boolean().optional(),
         cwd: z.string().optional(),
@@ -1077,11 +1080,21 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           const repo = new PostgresObservationRepository(this.options.pool);
           const obsLimit = body.limit ?? 50;
           const query = typeof body.query === 'string' ? body.query.trim() : '';
+          const anchor = typeof body.anchor === 'string' ? body.anchor.trim() : '';
 
-          // Hits drive the timeline window. When there is no query (or it is
-          // empty) we fall back to recent-by-project, which is what the
-          // worker timeline does for an empty anchor.
-          const observations = query.length > 0
+          // Anchor wins: window around a specific observation (the documented
+          // 3-step flow). Else hits drive the window via FTS; with neither we
+          // fall back to recent-by-project.
+          const observations = anchor.length > 0
+            ? await repo.listAroundAnchor({
+                anchorId: anchor,
+                projectId,
+                teamId,
+                before: body.depthBefore,
+                after: body.depthAfter,
+                excludeKind: 'summary',
+              })
+            : query.length > 0
             ? await repo.search({ projectId, teamId, query, limit: obsLimit })
             : await repo.listByProject({
                 projectId,

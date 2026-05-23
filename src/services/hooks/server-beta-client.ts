@@ -225,6 +225,12 @@ export interface ServerBetaTimelineRequest {
   // Optional: empty/absent → recent-by-project fallback on the server.
   query?: string;
   project?: string;
+  // Anchor (observation uuid) windows the timeline around that observation,
+  // mirroring the worker `timeline(anchor=...)` flow. depthBefore/After bound
+  // the window.
+  anchor?: string;
+  depthBefore?: number;
+  depthAfter?: number;
   limit?: number;
   forHuman?: boolean;
   cwd?: string;
