@@ -87,7 +87,8 @@ def get_active_version():
         except ValueError:
             return ()
 
-    versions = sorted(CACHE_DIR.iterdir(), key=lambda p: parse_ver(p.name)) if CACHE_DIR.exists() else []
+    candidates = [p for p in CACHE_DIR.iterdir() if parse_ver(p.name)] if CACHE_DIR.exists() else []
+    versions = sorted(candidates, key=lambda p: parse_ver(p.name))
     versions = [v for v in versions if (v / "server.ts").exists()]
     return versions[-1] if versions else None
 
