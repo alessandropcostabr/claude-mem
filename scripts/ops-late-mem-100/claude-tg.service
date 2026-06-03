@@ -1,0 +1,21 @@
+[Unit]
+Description=Claude Code Telegram bot (claude-patched in tmux)
+After=network-online.target
+Wants=network-online.target
+
+# Drop into ~/.config/systemd/user/, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now claude-tg.service
+# (linger required so it survives logout/reboot:
+#   sudo loginctl enable-linger $USER)
+
+[Service]
+Type=forking
+ExecStart=/usr/bin/tmux new-session -d -s claude-tg -c %h "claude-patched --channels plugin:telegram@claude-plugins-official"
+ExecStop=/usr/bin/tmux kill-session -t claude-tg
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

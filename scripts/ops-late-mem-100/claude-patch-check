@@ -1,0 +1,61 @@
+#!/bin/bash
+# claude-patch-check — Verifies Claude Code patches are current; re-applies if not.
+# Detects both native (ELF binary) installs and legacy npm installs, in that order.
+#
+# Usage: typically invoked from a Claude Code SessionStart hook:
+#   "command": "$HOME/.local/bin/claude-patch-check 2>/dev/null || true"
+#
+# Reads/writes:
+#   ~/.local/share/claude/patched/.last-patched-version (native marker)
+#   ~/.local/share/claude/patched/cli.js.original       (npm marker)
+#   ~/.local/bin/claude-patch                            (invoked when re-patch needed)
+
+set -euo pipefail
+
+PATCHED_DIR="$HOME/.local/share/claude/patched"
+LAST_PATCHED_VERSION_FILE="$PATCHED_DIR/.last-patched-version"
+
+# --- Mode 1: native (ELF binary) — ~/.local/bin/claude → versions/X.Y.Z ---
+CLAUDE_LINK="$HOME/.local/bin/claude"
+if [ -L "$CLAUDE_LINK" ]; then
+    TARGET=$(readlink -f "$CLAUDE_LINK")
+    CURRENT_VER=$(basename "$TARGET")
+    LAST_PATCHED=$(cat "$LAST_PATCHED_VERSION_FILE" 2>/dev/null || echo "")
+
+    if [ "$CURRENT_VER" != "$LAST_PATCHED" ]; then
+        echo "⚠ native CC = $CURRENT_VER (last patched: ${LAST_PATCHED:-none}) — re-patching..."
+        "$HOME/.local/bin/claude-patch" 2>&1 | tail -5
+        # Record the version that was just patched (in case the patcher itself doesn't)
+        echo "$CURRENT_VER" > "$LAST_PATCHED_VERSION_FILE"
+    else
+        echo "✓ claude-patched v$CURRENT_VER (patches active, native)"
+    fi
+    exit 0
+fi
+
+# --- Mode 2: npm install fallback (legacy) ---
+NPM_DIR=""
+for candidate in \
+    "$HOME/.npm-global/lib/node_modules/@anthropic-ai/claude-code" \
+    "$HOME/.brv-cli/lib/node_modules/@anthropic-ai/claude-code" \
+    "$(npm prefix -g 2>/dev/null)/lib/node_modules/@anthropic-ai/claude-code"; do
+    [ -f "$candidate/cli.js" ] && NPM_DIR="$candidate" && break
+done
+[ -z "$NPM_DIR" ] && echo "⚠ Claude Code not found (neither native nor npm)" && exit 0
+
+NPM_CLI="$NPM_DIR/cli.js"
+PATCHED_ORIG="$PATCHED_DIR/cli.js.original"
+
+if [ ! -f "$PATCHED_ORIG" ]; then
+    echo "⚠ cli.js.original missing — re-patching..."
+    "$HOME/.local/bin/claude-patch" 2>&1 | tail -3
+    exit 0
+fi
+
+if ! cmp -s "$NPM_CLI" "$PATCHED_ORIG"; then
+    echo "⚠ npm updated — re-patching..."
+    "$HOME/.local/bin/claude-patch" 2>&1 | tail -3
+else
+    VER=$(grep -oP '"version"\s*:\s*"[^"]+"' "$NPM_DIR/package.json" | grep -oP '[\d.]+')
+    echo "✓ claude-patched v$VER (patches active, npm)"
+fi
