@@ -148,7 +148,14 @@ async function buildHooks() {
         'cohere-ai',
         'ollama',
         '@chroma-core/default-embed',
-        'onnxruntime-node'
+        'onnxruntime-node',
+        // better-auth/kysely-adapter import DEFAULT_MIGRATION_TABLE /
+        // DEFAULT_MIGRATION_LOCK_TABLE from kysely, which esbuild cannot
+        // resolve as ESM named exports against kysely's CJS bundle. Keep
+        // these external so the runtime resolves them from node_modules.
+        'kysely',
+        'better-auth',
+        '@better-auth/kysely-adapter'
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
@@ -187,6 +194,13 @@ async function buildHooks() {
       external: [
         'bun:sqlite',
         'zod',
+        // better-auth/kysely-adapter import DEFAULT_MIGRATION_TABLE /
+        // DEFAULT_MIGRATION_LOCK_TABLE from kysely, which esbuild cannot
+        // resolve as ESM named exports against kysely's CJS bundle. Keep
+        // these external so the runtime resolves them from node_modules.
+        'kysely',
+        'better-auth',
+        '@better-auth/kysely-adapter'
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
