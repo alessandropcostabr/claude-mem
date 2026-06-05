@@ -1,6 +1,7 @@
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { getSelfAuthorConfig, isSubstantiveTool, recordSubstantiveEvent } from '../../shared/self-author.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
@@ -61,7 +62,12 @@ export const observationHandler: EventHandler = {
     // Self-authoring: count substantive activity so the Stop hook can decide
     // whether to ask the running session to write its own observations.
     try {
-      const saCfg = getSelfAuthorConfig(process.env);
+      const s = loadFromFileOnce();
+      const saCfg = getSelfAuthorConfig({
+        CLAUDE_MEM_SELF_AUTHOR_ENABLED: s.CLAUDE_MEM_SELF_AUTHOR_ENABLED,
+        CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: s.CLAUDE_MEM_SELF_AUTHOR_THRESHOLD,
+        CLAUDE_MEM_DATA_DIR: s.CLAUDE_MEM_DATA_DIR,
+      });
       if (saCfg.enabled && sessionId && isSubstantiveTool(toolName)) {
         recordSubstantiveEvent(sessionId, saCfg.stateDir);
       }

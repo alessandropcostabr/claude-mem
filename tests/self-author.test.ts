@@ -111,4 +111,9 @@ describe("getSelfAuthorConfig", () => {
     const cfg = getSelfAuthorConfig({ CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: "abc" });
     expect(cfg.threshold).toBe(4);
   });
+
+  it("derives the state dir from CLAUDE_MEM_DATA_DIR", () => {
+    const cfg = getSelfAuthorConfig({ CLAUDE_MEM_DATA_DIR: "/custom/data" });
+    expect(cfg.stateDir).toBe("/custom/data/self-author");
+  });
 });

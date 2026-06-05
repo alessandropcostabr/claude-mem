@@ -21,12 +21,18 @@ export interface SelfAuthorConfig {
   stateDir: string;
 }
 
-/** Read self-authoring config from an env-like object (opt-in by default). */
+/**
+ * Read self-authoring config from a settings-like object (opt-in by default).
+ * Accepts a plain map so it can be fed either from process.env or from the
+ * claude-mem SettingsDefaultsManager (which reflects settings.json) — see
+ * loadFromFileOnce() in the hook handlers.
+ */
 export function getSelfAuthorConfig(env: Record<string, string | undefined>): SelfAuthorConfig {
   const enabled = env.CLAUDE_MEM_SELF_AUTHOR_ENABLED === 'true';
   const parsed = Number.parseInt(env.CLAUDE_MEM_SELF_AUTHOR_THRESHOLD ?? '', 10);
   const threshold = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SELF_AUTHOR_THRESHOLD;
-  return { enabled, threshold, stateDir: defaultStateDir() };
+  const dataDir = env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+  return { enabled, threshold, stateDir: join(dataDir, 'self-author') };
 }
 
 /**
