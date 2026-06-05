@@ -15,6 +15,7 @@ describe("isSubstantiveTool", () => {
   it("treats mutating tools as substantive", () => {
     expect(isSubstantiveTool("Edit")).toBe(true);
     expect(isSubstantiveTool("Write")).toBe(true);
+    expect(isSubstantiveTool("MultiEdit")).toBe(true);
     expect(isSubstantiveTool("Bash")).toBe(true);
     expect(isSubstantiveTool("NotebookEdit")).toBe(true);
   });
@@ -32,6 +33,10 @@ describe("decideSelfAuthor", () => {
 
   it("blocks to self-author when substantive activity reaches the threshold", () => {
     expect(decideSelfAuthor(base).block).toBe(true);
+  });
+
+  it("blocks when the substantive count equals the threshold exactly", () => {
+    expect(decideSelfAuthor({ ...base, substantiveCount: 4, threshold: 4 }).block).toBe(true);
   });
 
   it("does not block when self-authoring is disabled", () => {
