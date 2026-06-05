@@ -9,6 +9,56 @@ import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
+import {
+  getSelfAuthorConfig,
+  getSubstantiveCount,
+  decideSelfAuthor,
+  resetSubstantiveCount,
+  SELF_AUTHOR_PROMPT,
+} from '../../shared/self-author.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
+
+/**
+ * After the (still-parallel) generation path runs, decide whether to block the
+ * Stop and ask the running session to write its own observations. Returns the
+ * self-author block when the activity threshold is met, otherwise the default
+ * (clean stop). Guarded by stopHookActive so the self-authoring turn itself
+ * stops cleanly.
+ */
+function maybeSelfAuthor(input: NormalizedHookInput, fallthrough: HookResult): HookResult {
+  try {
+    const s = loadFromFileOnce();
+    const cfg = getSelfAuthorConfig({
+      CLAUDE_MEM_SELF_AUTHOR_ENABLED: s.CLAUDE_MEM_SELF_AUTHOR_ENABLED,
+      CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: s.CLAUDE_MEM_SELF_AUTHOR_THRESHOLD,
+      CLAUDE_MEM_DATA_DIR: s.CLAUDE_MEM_DATA_DIR,
+    });
+    if (!cfg.enabled || !input.sessionId) return fallthrough;
+    const count = getSubstantiveCount(input.sessionId, cfg.stateDir);
+    const decision = decideSelfAuthor({
+      enabled: cfg.enabled,
+      stopHookActive: input.stopHookActive === true,
+      substantiveCount: count,
+      threshold: cfg.threshold,
+    });
+    if (!decision.block) return fallthrough;
+    // Optimistic reset: we zero the counter before the block is honored. If the
+    // hook crashes or Claude ignores the block, the count is lost — acceptable
+    // because the parallel generate-for-event path still captures the events.
+    resetSubstantiveCount(input.sessionId, cfg.stateDir);
+    logger.info('HOOK', 'Self-authoring: blocking Stop to request observations', {
+      sessionId: input.sessionId,
+      substantiveCount: count,
+      threshold: cfg.threshold,
+    });
+    return { continue: true, decision: 'block', reason: SELF_AUTHOR_PROMPT };
+  } catch (err) {
+    logger.debug('HOOK', 'self-author decision failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return fallthrough;
+  }
+}
 
 export const summarizeHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -101,7 +151,7 @@ export const summarizeHandler: EventHandler = {
         });
         await runtime.client.endSession({ sessionId: serverSessionId });
         logger.debug('HOOK', 'Summary request queued via server-beta');
-        return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+        return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS });
       } catch (error: unknown) {
         if (isServerBetaClientError(error) && error.isFallbackEligible()) {
           logServerBetaFallback(error.kind, {
@@ -114,7 +164,10 @@ export const summarizeHandler: EventHandler = {
           logger.error('HOOK', 'Server beta summarize failed (non-recoverable)', {
             error: error instanceof Error ? error.message : String(error),
           });
-          return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+          // Self-authoring is independent of the generation path — run it even
+          // when server-beta generation fails (that's the whole point: memory
+          // shouldn't depend on the LLM generation pipeline succeeding).
+          return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS });
         }
       }
     }
@@ -129,10 +182,10 @@ export const summarizeHandler: EventHandler = {
       },
     );
     if (isWorkerFallback(queueResult)) {
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS });
     }
 
     logger.debug('HOOK', 'Summary request queued, exiting hook');
-    return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS });
   },
 };
