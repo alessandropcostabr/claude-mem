@@ -22,6 +22,7 @@ export const claudeCodeAdapter: PlatformAdapter = {
       transcriptPath: r.transcript_path,
       agentId: pickAgentField(r.agent_id),
       agentType: pickAgentField(r.agent_type),
+      stopHookActive: typeof r.stop_hook_active === 'boolean' ? r.stop_hook_active : undefined,
     };
   },
   formatOutput(result) {
@@ -36,6 +37,17 @@ export const claudeCodeAdapter: PlatformAdapter = {
     const output: Record<string, unknown> = {};
     if (r.systemMessage) {
       output.systemMessage = r.systemMessage;
+    }
+    // Stop-hook control fields: required for the self-authoring block to reach
+    // the hook runner (Claude Code reads top-level decision/reason/continue).
+    if (r.continue !== undefined) {
+      output.continue = r.continue;
+    }
+    if (r.decision === 'block') {
+      output.decision = 'block';
+    }
+    if (r.reason) {
+      output.reason = r.reason;
     }
     return output;
   }
