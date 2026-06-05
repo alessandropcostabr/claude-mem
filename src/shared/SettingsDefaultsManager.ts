@@ -4,6 +4,8 @@ import { join, dirname } from 'path';
 import { homedir } from 'os';
 
 export interface SettingsDefaults {
+  CLAUDE_MEM_SELF_AUTHOR_ENABLED: string;
+  CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: string;
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
   CLAUDE_MEM_WORKER_PORT: string;
@@ -81,6 +83,8 @@ export interface SettingsDefaults {
 
 export class SettingsDefaultsManager {
   private static readonly DEFAULTS: SettingsDefaults = {
+    CLAUDE_MEM_SELF_AUTHOR_ENABLED: 'false',  // Opt-in: session writes its own observations at Stop
+    CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: '4',     // Substantive tool uses before asking to self-author
     CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
