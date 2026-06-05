@@ -16,6 +16,7 @@ import {
   resetSubstantiveCount,
   SELF_AUTHOR_PROMPT,
 } from '../../shared/self-author.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
 
 /**
  * After the (still-parallel) generation path runs, decide whether to block the
@@ -26,7 +27,12 @@ import {
  */
 function maybeSelfAuthor(input: NormalizedHookInput, fallthrough: HookResult): HookResult {
   try {
-    const cfg = getSelfAuthorConfig(process.env);
+    const s = loadFromFileOnce();
+    const cfg = getSelfAuthorConfig({
+      CLAUDE_MEM_SELF_AUTHOR_ENABLED: s.CLAUDE_MEM_SELF_AUTHOR_ENABLED,
+      CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: s.CLAUDE_MEM_SELF_AUTHOR_THRESHOLD,
+      CLAUDE_MEM_DATA_DIR: s.CLAUDE_MEM_DATA_DIR,
+    });
     if (!cfg.enabled || !input.sessionId) return fallthrough;
     const count = getSubstantiveCount(input.sessionId, cfg.stateDir);
     const decision = decideSelfAuthor({
@@ -158,7 +164,10 @@ export const summarizeHandler: EventHandler = {
           logger.error('HOOK', 'Server beta summarize failed (non-recoverable)', {
             error: error instanceof Error ? error.message : String(error),
           });
-          return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+          // Self-authoring is independent of the generation path — run it even
+          // when server-beta generation fails (that's the whole point: memory
+          // shouldn't depend on the LLM generation pipeline succeeding).
+          return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS });
         }
       }
     }
@@ -173,7 +182,7 @@ export const summarizeHandler: EventHandler = {
       },
     );
     if (isWorkerFallback(queueResult)) {
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS });
     }
 
     logger.debug('HOOK', 'Summary request queued, exiting hook');
