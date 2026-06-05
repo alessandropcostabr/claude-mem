@@ -68,11 +68,19 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
     try {
       response = await this.fetchImpl(ANTHROPIC_API_URL, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.apiKey,
-          'anthropic-version': ANTHROPIC_VERSION,
-        },
+        headers:
+          this.apiKey && this.apiKey.startsWith('sk-ant-oat')
+            ? {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${this.apiKey}`,
+                'anthropic-version': ANTHROPIC_VERSION,
+                'anthropic-beta': 'oauth-2025-04-20',
+              }
+            : {
+                'Content-Type': 'application/json',
+                'x-api-key': this.apiKey,
+                'anthropic-version': ANTHROPIC_VERSION,
+              },
         body: JSON.stringify({
           model: this.model,
           max_tokens: this.maxOutputTokens,
