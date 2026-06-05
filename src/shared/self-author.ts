@@ -4,7 +4,7 @@
  * holds the pure decision logic (no IO) so it is fully unit-testable.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, appendFileSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -12,7 +12,7 @@ export const DEFAULT_SELF_AUTHOR_THRESHOLD = 4;
 
 /** Default on-disk location for per-session substantive counters. */
 export function defaultStateDir(): string {
-  return join(process.env.HOME || homedir(), '.claude-mem', 'self-author');
+  return join(homedir(), '.claude-mem', 'self-author');
 }
 
 export interface SelfAuthorConfig {
@@ -100,14 +100,15 @@ function counterFile(sessionId: string, dir: string): string {
 export function getSubstantiveCount(sessionId: string, dir: string): number {
   const file = counterFile(sessionId, dir);
   if (!existsSync(file)) return 0;
-  const n = Number.parseInt(readFileSync(file, 'utf8').trim(), 10);
-  return Number.isFinite(n) ? n : 0;
+  // One non-empty line per event (append-only) — count the lines.
+  return readFileSync(file, 'utf8').split('\n').filter(Boolean).length;
 }
 
 export function recordSubstantiveEvent(sessionId: string, dir: string): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const next = getSubstantiveCount(sessionId, dir) + 1;
-  writeFileSync(counterFile(sessionId, dir), String(next));
+  // Append a marker line rather than read-modify-write: appends are atomic for
+  // small writes, so concurrent hook processes can't clobber each other's count.
+  appendFileSync(counterFile(sessionId, dir), '1\n');
 }
 
 export function resetSubstantiveCount(sessionId: string, dir: string): void {

@@ -36,6 +36,9 @@ function maybeSelfAuthor(input: NormalizedHookInput, fallthrough: HookResult): H
       threshold: cfg.threshold,
     });
     if (!decision.block) return fallthrough;
+    // Optimistic reset: we zero the counter before the block is honored. If the
+    // hook crashes or Claude ignores the block, the count is lost — acceptable
+    // because the parallel generate-for-event path still captures the events.
     resetSubstantiveCount(input.sessionId, cfg.stateDir);
     logger.info('HOOK', 'Self-authoring: blocking Stop to request observations', {
       sessionId: input.sessionId,
