@@ -9,6 +9,47 @@ import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
+import {
+  getSelfAuthorConfig,
+  getSubstantiveCount,
+  decideSelfAuthor,
+  resetSubstantiveCount,
+  SELF_AUTHOR_PROMPT,
+} from '../../shared/self-author.js';
+
+/**
+ * After the (still-parallel) generation path runs, decide whether to block the
+ * Stop and ask the running session to write its own observations. Returns the
+ * self-author block when the activity threshold is met, otherwise the default
+ * (clean stop). Guarded by stopHookActive so the self-authoring turn itself
+ * stops cleanly.
+ */
+function maybeSelfAuthor(input: NormalizedHookInput, fallthrough: HookResult): HookResult {
+  try {
+    const cfg = getSelfAuthorConfig(process.env);
+    if (!cfg.enabled || !input.sessionId) return fallthrough;
+    const count = getSubstantiveCount(input.sessionId, cfg.stateDir);
+    const decision = decideSelfAuthor({
+      enabled: cfg.enabled,
+      stopHookActive: input.stopHookActive === true,
+      substantiveCount: count,
+      threshold: cfg.threshold,
+    });
+    if (!decision.block) return fallthrough;
+    resetSubstantiveCount(input.sessionId, cfg.stateDir);
+    logger.info('HOOK', 'Self-authoring: blocking Stop to request observations', {
+      sessionId: input.sessionId,
+      substantiveCount: count,
+      threshold: cfg.threshold,
+    });
+    return { continue: true, decision: 'block', reason: SELF_AUTHOR_PROMPT };
+  } catch (err) {
+    logger.debug('HOOK', 'self-author decision failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return fallthrough;
+  }
+}
 
 export const summarizeHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -101,7 +142,7 @@ export const summarizeHandler: EventHandler = {
         });
         await runtime.client.endSession({ sessionId: serverSessionId });
         logger.debug('HOOK', 'Summary request queued via server-beta');
-        return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+        return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS });
       } catch (error: unknown) {
         if (isServerBetaClientError(error) && error.isFallbackEligible()) {
           logServerBetaFallback(error.kind, {
@@ -133,6 +174,6 @@ export const summarizeHandler: EventHandler = {
     }
 
     logger.debug('HOOK', 'Summary request queued, exiting hook');
-    return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS });
   },
 };

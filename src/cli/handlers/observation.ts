@@ -1,5 +1,6 @@
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
+import { getSelfAuthorConfig, isSubstantiveTool, recordSubstantiveEvent } from '../../shared/self-author.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
@@ -55,6 +56,19 @@ export const observationHandler: EventHandler = {
     if (!shouldTrackProject(cwd)) {
       logger.debug('HOOK', 'Project excluded from tracking, skipping observation', { cwd, toolName });
       return { continue: true, suppressOutput: true };
+    }
+
+    // Self-authoring: count substantive activity so the Stop hook can decide
+    // whether to ask the running session to write its own observations.
+    try {
+      const saCfg = getSelfAuthorConfig(process.env);
+      if (saCfg.enabled && sessionId && isSubstantiveTool(toolName)) {
+        recordSubstantiveEvent(sessionId, saCfg.stateDir);
+      }
+    } catch (err) {
+      logger.debug('HOOK', 'self-author counter increment failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     const runtime = resolveRuntimeContext();
