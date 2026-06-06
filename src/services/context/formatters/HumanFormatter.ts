@@ -9,6 +9,7 @@ import type {
 import { colors } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
+import { formatContextReferenceId } from './id-display.js';
 
 function formatHeaderDateTime(): string {
   const now = new Date();
@@ -113,12 +114,13 @@ export function renderHumanTableRow(
   const title = obs.title || 'Untitled';
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const { readTokens, discoveryTokens, workEmoji } = formatObservationTokenDisplay(obs, config);
+  const refId = formatContextReferenceId(obs.id, config);
 
   const timePart = showTime ? `${colors.dim}${time}${colors.reset}` : ' '.repeat(time.length);
   const readPart = (config.showReadTokens && readTokens > 0) ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
   const discoveryPart = (config.showWorkTokens && discoveryTokens > 0) ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
 
-  return `  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`;
+  return `  ${colors.dim}#${refId}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`;
 }
 
 export function renderHumanFullObservation(
@@ -132,12 +134,13 @@ export function renderHumanFullObservation(
   const title = obs.title || 'Untitled';
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const { readTokens, discoveryTokens, workEmoji } = formatObservationTokenDisplay(obs, config);
+  const refId = formatContextReferenceId(obs.id, config);
 
   const timePart = showTime ? `${colors.dim}${time}${colors.reset}` : ' '.repeat(time.length);
   const readPart = (config.showReadTokens && readTokens > 0) ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
   const discoveryPart = (config.showWorkTokens && discoveryTokens > 0) ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
 
-  output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${colors.bright}${title}${colors.reset}`);
+  output.push(`  ${colors.dim}#${refId}${colors.reset}  ${timePart}  ${icon}  ${colors.bright}${title}${colors.reset}`);
   if (detailField) {
     output.push(`    ${colors.dim}${detailField}${colors.reset}`);
   }
