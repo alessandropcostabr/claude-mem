@@ -5,6 +5,7 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
+import { resolveRuntimeContext } from '../../../hooks/runtime-selector.js';
 
 const saveMemorySchema = z.object({
   text: z.string().trim().min(1),
@@ -245,6 +246,67 @@ export class MemoryRoutes extends BaseRouteHandler {
     } = req.body;
 
     const narrativeText = narrative || bodyText;
+
+    // Server-beta routing: in server-beta runtime the canonical write path is
+    // the remote PG via `/v1/memories` (same path as MCP `observation_add`),
+    // NOT the worker-local SQLite store. Without this, self-authored
+    // observations land in a local island — invisible to inject/search and the
+    // fleet PG (.253). See feedback_observation-add-content-undefined / project_self_author.
+    const runtime = resolveRuntimeContext();
+    if (runtime.runtime === 'server-beta') {
+      const computedTitle = title
+        || narrativeText.substring(0, 60).trim() + (narrativeText.length > 60 ? '...' : '');
+      const metadata: Record<string, unknown> = {
+        type,
+        title: computedTitle,
+        ...(subtitle ? { subtitle } : {}),
+        facts: MemoryRoutes.coerceStringArray(facts),
+        concepts: MemoryRoutes.coerceStringArray(concepts),
+        files_read: MemoryRoutes.coerceStringArray(files_read),
+        files_modified: MemoryRoutes.coerceStringArray(files_modified),
+        ...(generated_by_model ? { generated_by_model } : {}),
+      };
+      try {
+        const resp = await runtime.client.addObservation({
+          projectId: runtime.projectId,
+          content: narrativeText,
+          kind: type,
+          metadata,
+        });
+        logger.info('HTTP', 'Structured observation saved via server-beta', {
+          id: resp.memory.id,
+          type,
+          projectId: runtime.projectId,
+          generated_by_model: generated_by_model || 'not specified',
+        });
+        res.json({
+          success: true,
+          id: resp.memory.id,
+          type,
+          title: computedTitle,
+          project: runtime.projectId,
+          generated_by_model: generated_by_model || null,
+          message: `Structured observation ${resp.memory.id} saved to server-beta`,
+          runtime: 'server-beta',
+        });
+        return;
+      } catch (error: unknown) {
+        // Do NOT silently fall back to the local SQLite store — that would
+        // recreate the "local island" bug. Surface the failure to the caller.
+        logger.error('HTTP', 'server-beta save-observation failed', {
+          type,
+          projectId: runtime.projectId,
+        }, error as Error);
+        res.status(502).json({
+          success: false,
+          error: 'ServerBetaSaveFailed',
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+    }
+
+    // Worker runtime: original local SQLite store path (unchanged).
     const targetProject = project || this.defaultProject;
     const sessionStore = this.dbManager.getSessionStore();
     const chromaSync = this.dbManager.getChromaSync();
