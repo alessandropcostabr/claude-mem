@@ -316,23 +316,18 @@ export class ServerBetaClient {
   buildAddObservationPayload(
     input: ServerBetaAddObservationRequest,
   ): Record<string, unknown> {
-    // Write-path contract (#2684): /v1/memories persists a `memory_items` row
-    // whose searchable text lives in `narrative` (the FTS trigger copies it
-    // into memory_items_fts). The MCP `observation_add` surface speaks in terms
-    // of `content`; map it onto `narrative` so the row is never empty and the
-    // FTS index always has something to match. `type` is REQUIRED by
-    // CreateMemoryItemSchema; default it from `kind` so a manual insert that
-    // only supplied content still persists instead of 400-ing.
-    const content = input.content;
-    const kind = input.kind ?? 'manual';
-    const metadataTitle = typeof input.metadata?.title === 'string' ? input.metadata.title : undefined;
+    // Write-path contract (server-beta vivo .253, validado por curl 09/06):
+    // POST /v1/memories exige `content` (Zod content:z.string().min(1)) e grava
+    // em `observations`. `type`/`narrative` NÃO são aceitos (payload com
+    // narrative → 400 content undefined; com content → 201). Mandar exatamente
+    // o schema do servidor: projectId + content (+ serverSessionId/kind/metadata).
+    // Histórico: a versão #2684 (memory_items/narrative/type) é de outro server-beta;
+    // o vivo no .253 (super bundle 05/jun) usa content. Ver feedback_observation-add-content-undefined.
     return {
       projectId: input.projectId,
-      kind,
-      type: kind,
-      narrative: content,
-      ...(metadataTitle ? { title: metadataTitle } : {}),
+      content: input.content,
       ...(input.serverSessionId !== undefined ? { serverSessionId: input.serverSessionId } : {}),
+      ...(input.kind !== undefined ? { kind: input.kind } : {}),
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
     };
   }
