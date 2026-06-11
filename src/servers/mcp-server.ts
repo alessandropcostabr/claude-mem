@@ -590,7 +590,8 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         files_read: { type: 'array', items: { type: 'string' }, description: 'Files read' },
         files_modified: { type: 'array', items: { type: 'string' }, description: 'Files modified' },
         project: { type: 'string', description: 'Project name' },
-        generated_by_model: { type: 'string', description: 'Model that generated this observation' }
+        generated_by_model: { type: 'string', description: 'Model that generated this observation' },
+        checkpoint_key: { type: 'string', description: 'Checkpoint Rider key (real-time self-author); makes the observation idempotent and tags it as regime C-prime' }
       },
       required: ['type', 'narrative']
     },

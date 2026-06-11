@@ -6,6 +6,10 @@ import { homedir } from 'os';
 export interface SettingsDefaults {
   CLAUDE_MEM_SELF_AUTHOR_ENABLED: string;
   CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: string;
+  CLAUDE_MEM_SELF_AUTHOR_REALTIME: string;
+  CLAUDE_MEM_SELF_AUTHOR_COOLDOWN_PROMPTS: string;
+  CLAUDE_MEM_SELF_AUTHOR_MAX_OBS_PER_CHECKPOINT: string;
+  CLAUDE_MEM_SELF_AUTHOR_FALLBACK_DELAY_MS: string;
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
   CLAUDE_MEM_WORKER_PORT: string;
@@ -89,6 +93,10 @@ export class SettingsDefaultsManager {
   private static readonly DEFAULTS: SettingsDefaults = {
     CLAUDE_MEM_SELF_AUTHOR_ENABLED: 'false',  // Opt-in: session writes its own observations at Stop
     CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: '4',     // Substantive tool uses before asking to self-author
+    CLAUDE_MEM_SELF_AUTHOR_REALTIME: 'false',  // Opt-in: Checkpoint Rider (real-time self-author via UserPromptSubmit)
+    CLAUDE_MEM_SELF_AUTHOR_COOLDOWN_PROMPTS: '2',        // Min prompts between checkpoint riders
+    CLAUDE_MEM_SELF_AUTHOR_MAX_OBS_PER_CHECKPOINT: '3',  // Max observations asked per checkpoint
+    CLAUDE_MEM_SELF_AUTHOR_FALLBACK_DELAY_MS: '900000',  // Loop-A fallback delay (15 min)
     CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),

@@ -13,6 +13,54 @@ import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
 import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
+import {
+  getSelfAuthorConfig,
+  getCheckpointConfig,
+  getSubstantiveCount,
+  resetSubstantiveCount,
+  readCheckpointState,
+  writeCheckpointState,
+  advanceCheckpoint,
+} from '../../shared/self-author.js';
+import type { SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+
+/**
+ * Checkpoint Rider (real-time self-author): when CLAUDE_MEM_SELF_AUTHOR_REALTIME
+ * is on, ride this UserPromptSubmit with a checkpoint reminder so the session
+ * self-authors at the turn tail. Returns the rider text to append to the
+ * injected context, or '' when no checkpoint fires. Off by default → no-op.
+ */
+function computeCheckpointRider(sessionId: string, settings: SettingsDefaults): string {
+  const env: Record<string, string | undefined> = {
+    CLAUDE_MEM_SELF_AUTHOR_REALTIME: settings.CLAUDE_MEM_SELF_AUTHOR_REALTIME,
+    CLAUDE_MEM_SELF_AUTHOR_COOLDOWN_PROMPTS: settings.CLAUDE_MEM_SELF_AUTHOR_COOLDOWN_PROMPTS,
+    CLAUDE_MEM_SELF_AUTHOR_MAX_OBS_PER_CHECKPOINT: settings.CLAUDE_MEM_SELF_AUTHOR_MAX_OBS_PER_CHECKPOINT,
+    CLAUDE_MEM_SELF_AUTHOR_FALLBACK_DELAY_MS: settings.CLAUDE_MEM_SELF_AUTHOR_FALLBACK_DELAY_MS,
+    CLAUDE_MEM_SELF_AUTHOR_ENABLED: settings.CLAUDE_MEM_SELF_AUTHOR_ENABLED,
+    CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: settings.CLAUDE_MEM_SELF_AUTHOR_THRESHOLD,
+    CLAUDE_MEM_DATA_DIR: settings.CLAUDE_MEM_DATA_DIR,
+  };
+  const cpCfg = getCheckpointConfig(env);
+  if (!cpCfg.realtimeEnabled) return '';
+  const saCfg = getSelfAuthorConfig(env);
+  const prev = readCheckpointState(sessionId, saCfg.stateDir);
+  const { state, rider } = advanceCheckpoint(prev, {
+    sessionId,
+    substantiveCount: getSubstantiveCount(sessionId, saCfg.stateDir),
+    threshold: saCfg.threshold,
+    realtimeEnabled: true,
+    cooldownPrompts: cpCfg.cooldownPrompts,
+    // The claude-mem MCP server provides save_observation whenever the plugin
+    // is loaded, so it is available by construction in a tracked session.
+    saveObservationAvailable: true,
+  });
+  writeCheckpointState(sessionId, saCfg.stateDir, state);
+  if (!rider) return '';
+  // Optimistic reset: the checkpoint claims the substantive window now; if the
+  // rider is ignored, the delayed Loop-A fallback covers it (design §2.3/§3).
+  resetSubstantiveCount(sessionId, saCfg.stateDir);
+  return rider;
+}
 
 interface SessionInitResponse {
   sessionDbId: number;
@@ -76,6 +124,7 @@ export const sessionInitHandler: EventHandler = {
         // the worker path. Best-effort: any failure just skips injection — the
         // session already started, so we never fall back to the worker here.
         const sbSettings = loadFromFileOnce();
+        const riderContext = computeCheckpointRider(sessionId, sbSettings);
         const sbSemanticInject =
           String(sbSettings.CLAUDE_MEM_SEMANTIC_INJECT).toLowerCase() === 'true';
         if (sbSemanticInject && prompt.length >= 20 && prompt !== '[media prompt]') {
@@ -97,7 +146,9 @@ export const sessionInitHandler: EventHandler = {
                 suppressOutput: true,
                 hookSpecificOutput: {
                   hookEventName: 'UserPromptSubmit',
-                  additionalContext: `## Relevant Past Work (semantic match)\n\n${semanticContext}`,
+                  additionalContext: riderContext
+                    ? `## Relevant Past Work (semantic match)\n\n${semanticContext}\n\n${riderContext}`
+                    : `## Relevant Past Work (semantic match)\n\n${semanticContext}`,
                 },
               };
             }
@@ -106,6 +157,13 @@ export const sessionInitHandler: EventHandler = {
               error: semanticError instanceof Error ? semanticError.message : String(semanticError),
             });
           }
+        }
+        if (riderContext) {
+          return {
+            continue: true,
+            suppressOutput: true,
+            hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: riderContext },
+          };
         }
         return { continue: true, suppressOutput: true };
       } catch (error: unknown) {
