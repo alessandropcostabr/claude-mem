@@ -6,6 +6,8 @@ import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
 import { resolveRuntimeContext } from '../../../hooks/runtime-selector.js';
+import { selfAuthorTags } from '../../../../shared/self-author.js';
+import { hostname } from 'os';
 
 const saveMemorySchema = z.object({
   text: z.string().trim().min(1),
@@ -30,6 +32,7 @@ const saveObservationSchema = z.object({
   files_modified: z.union([z.array(z.string()), z.string()]).optional(),
   project: z.string().optional(),
   generated_by_model: z.string().optional(),
+  checkpoint_key: z.string().optional(),
 }).refine(data => !!(data.narrative || data.text), {
   message: 'narrative (or text) is required and must be non-empty',
 });
@@ -242,7 +245,7 @@ export class MemoryRoutes extends BaseRouteHandler {
     const {
       type, title, subtitle, narrative, text: bodyText,
       facts, concepts, files_read, files_modified,
-      project, generated_by_model
+      project, generated_by_model, checkpoint_key
     } = req.body;
 
     const narrativeText = narrative || bodyText;
@@ -265,6 +268,10 @@ export class MemoryRoutes extends BaseRouteHandler {
         files_read: MemoryRoutes.coerceStringArray(files_read),
         files_modified: MemoryRoutes.coerceStringArray(files_modified),
         ...(generated_by_model ? { generated_by_model } : {}),
+        // Case-study v2 regime tags (design §10.3): regime/origin/host so C
+        // (Stop) and C-prime (Checkpoint Rider) are separable in PG without
+        // depending on the generation_key format.
+        ...selfAuthorTags(checkpoint_key, hostname()),
       };
       try {
         const resp = await runtime.client.addObservation({

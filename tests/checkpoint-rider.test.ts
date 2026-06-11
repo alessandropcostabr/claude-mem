@@ -9,6 +9,7 @@ import {
   EMPTY_CHECKPOINT_STATE,
   readCheckpointState,
   writeCheckpointState,
+  selfAuthorTags,
 } from '../src/shared/self-author';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -112,6 +113,21 @@ describe('advanceCheckpoint (per-prompt state transition)', () => {
     const r = advanceCheckpoint({ lastCheckpointSeq: 1, promptsSinceLastRider: 1, pendingCheckpointKey: 'selfauthor:sess-abc:1' }, open);
     expect(r.state.lastCheckpointSeq).toBe(2);
     expect(r.rider).toContain('selfauthor:sess-abc:2');
+  });
+});
+
+describe('selfAuthorTags (regime discriminator for §10)', () => {
+  it('tags a checkpoint observation as regime C-prime with origin, key and host', () => {
+    expect(selfAuthorTags('selfauthor:s:1', 'hyper')).toEqual({
+      regime: 'C-prime',
+      origin: 'self_author',
+      checkpoint_key: 'selfauthor:s:1',
+      host: 'hyper',
+    });
+  });
+
+  it('tags a non-checkpoint (Stop) observation as regime C with host', () => {
+    expect(selfAuthorTags(undefined, 'darkstar')).toEqual({ regime: 'C', host: 'darkstar' });
   });
 });
 

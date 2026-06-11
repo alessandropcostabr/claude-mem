@@ -224,6 +224,23 @@ export function advanceCheckpoint(
 }
 
 /**
+ * Observation metadata tags used by the case-study v2 regime discriminator
+ * (design §10.3): every self-authored observation carries an authoritative
+ * `regime` (C = Stop, C-prime = Checkpoint Rider) plus `host` so cross-host
+ * runs (C on .254 vs C-prime on .100) can be separated without depending on the
+ * generation_key format. C-prime also carries its checkpoint_key for tracing.
+ */
+export function selfAuthorTags(
+  checkpointKeyValue: string | undefined,
+  host: string
+): Record<string, unknown> {
+  if (checkpointKeyValue) {
+    return { regime: 'C-prime', origin: 'self_author', checkpoint_key: checkpointKeyValue, host };
+  }
+  return { regime: 'C', host };
+}
+
+/**
  * Build the checkpoint rider appended to the user's prompt on UserPromptSubmit.
  * Low-salience system-reminder: it orders the task first (priority), caps the
  * write at 3 observations, carries the deterministic checkpoint_key, and tells
