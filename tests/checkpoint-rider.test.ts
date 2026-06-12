@@ -10,6 +10,7 @@ import {
   readCheckpointState,
   writeCheckpointState,
   selfAuthorTags,
+  parseCheckpointSessionId,
 } from '../src/shared/self-author';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -113,6 +114,18 @@ describe('advanceCheckpoint (per-prompt state transition)', () => {
     const r = advanceCheckpoint({ lastCheckpointSeq: 1, promptsSinceLastRider: 1, pendingCheckpointKey: 'selfauthor:sess-abc:1' }, open);
     expect(r.state.lastCheckpointSeq).toBe(2);
     expect(r.rider).toContain('selfauthor:sess-abc:2');
+  });
+});
+
+describe('parseCheckpointSessionId (recover the content session id from a checkpoint key)', () => {
+  it('extracts the session id from selfauthor:<sid>:<seq>', () => {
+    expect(parseCheckpointSessionId('selfauthor:c1e6326c-449a-4005-81f3-4408d9bf2d34:1'))
+      .toBe('c1e6326c-449a-4005-81f3-4408d9bf2d34');
+  });
+
+  it('returns null for a non-checkpoint or malformed key', () => {
+    expect(parseCheckpointSessionId(undefined)).toBeNull();
+    expect(parseCheckpointSessionId('garbage')).toBeNull();
   });
 });
 

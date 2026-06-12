@@ -268,6 +268,19 @@ export function checkpointKey(sessionId: string, seq: number): string {
 }
 
 /**
+ * Recover the content session id embedded in a checkpoint key
+ * (`selfauthor:<sid>:<seq>` → `<sid>`). Returns null for a missing or malformed
+ * key. Lets the worker attribute a self-authored observation to its session
+ * (`metadata.content_session_id`) without the caller passing it explicitly.
+ */
+export function parseCheckpointSessionId(key: string | undefined | null): string | null {
+  if (!key) return null;
+  const parts = key.split(':');
+  if (parts.length < 3 || parts[0] !== 'selfauthor' || !parts[1]) return null;
+  return parts[1];
+}
+
+/**
  * Per-observation generation key: the checkpoint key plus the observation index
  * within that checkpoint, e.g. `selfauthor:<sid>:<seq>:<idx>`.
  */

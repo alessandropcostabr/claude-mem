@@ -6,7 +6,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
 import { resolveRuntimeContext } from '../../../hooks/runtime-selector.js';
-import { selfAuthorTags } from '../../../../shared/self-author.js';
+import { selfAuthorTags, parseCheckpointSessionId } from '../../../../shared/self-author.js';
 import { hostname } from 'os';
 
 const saveMemorySchema = z.object({
@@ -259,6 +259,10 @@ export class MemoryRoutes extends BaseRouteHandler {
     if (runtime.runtime === 'server-beta') {
       const computedTitle = title
         || narrativeText.substring(0, 60).trim() + (narrativeText.length > 60 ? '...' : '');
+      // Recover the CC session id from the C-prime checkpoint key so the
+      // observation is attributable to its session (server_session_id is NULL on
+      // the save_observation path — no PG session row id is known here).
+      const contentSessionId = parseCheckpointSessionId(checkpoint_key);
       const metadata: Record<string, unknown> = {
         type,
         title: computedTitle,
@@ -272,6 +276,7 @@ export class MemoryRoutes extends BaseRouteHandler {
         // (Stop) and C-prime (Checkpoint Rider) are separable in PG without
         // depending on the generation_key format.
         ...selfAuthorTags(checkpoint_key, hostname()),
+        ...(contentSessionId ? { content_session_id: contentSessionId } : {}),
       };
       try {
         const resp = await runtime.client.addObservation({
@@ -279,6 +284,9 @@ export class MemoryRoutes extends BaseRouteHandler {
           content: narrativeText,
           kind: type,
           metadata,
+          // Sent so the server can attribute server_session_id when it maps a
+          // content session id; harmless if it ignores the field.
+          ...(contentSessionId ? { contentSessionId } : {}),
         });
         logger.info('HTTP', 'Structured observation saved via server-beta', {
           id: resp.memory.id,
