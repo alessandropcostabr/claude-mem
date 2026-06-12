@@ -43,6 +43,10 @@ function maybeSelfAuthor(input: NormalizedHookInput, fallthrough: HookResult): H
       stopHookActive: input.stopHookActive === true,
       substantiveCount: count,
       threshold: cfg.threshold,
+      // When the Checkpoint Rider is on (this host = C-prime), the rider already
+      // self-authors mid-session, so the Stop stays transparent (no blocking,
+      // no "Stop hook error"). The tail is still captured by the pipeline.
+      realtimeEnabled: s.CLAUDE_MEM_SELF_AUTHOR_REALTIME === 'true',
     });
     if (!decision.block) return fallthrough;
     // Optimistic reset: we zero the counter before the block is honored. If the

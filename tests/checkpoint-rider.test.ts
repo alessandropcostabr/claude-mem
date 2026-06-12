@@ -11,6 +11,7 @@ import {
   writeCheckpointState,
   selfAuthorTags,
   parseCheckpointSessionId,
+  decideSelfAuthor,
 } from '../src/shared/self-author';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -114,6 +115,18 @@ describe('advanceCheckpoint (per-prompt state transition)', () => {
     const r = advanceCheckpoint({ lastCheckpointSeq: 1, promptsSinceLastRider: 1, pendingCheckpointKey: 'selfauthor:sess-abc:1' }, open);
     expect(r.state.lastCheckpointSeq).toBe(2);
     expect(r.rider).toContain('selfauthor:sess-abc:2');
+  });
+});
+
+describe('decideSelfAuthor — Stop is transparent (non-blocking) when realtime is on', () => {
+  const ready = { enabled: true, stopHookActive: false, substantiveCount: 10, threshold: 4 };
+
+  it('blocks at Stop when realtime is OFF (classic C, threshold met)', () => {
+    expect(decideSelfAuthor({ ...ready, realtimeEnabled: false }).block).toBe(true);
+  });
+
+  it('does NOT block at Stop when realtime is ON (the rider handles it — no red error)', () => {
+    expect(decideSelfAuthor({ ...ready, realtimeEnabled: true }).block).toBe(false);
   });
 });
 

@@ -107,6 +107,12 @@ export interface SelfAuthorInput {
   substantiveCount: number;
   /** Minimum substantive activity before asking the session to self-author. */
   threshold: number;
+  /**
+   * Real-time self-author (Checkpoint Rider) is active. When true, the rider
+   * already self-authors mid-session transparently, so the Stop must NOT block
+   * (no "Stop hook error"); the session tail is still captured by the pipeline.
+   */
+  realtimeEnabled?: boolean;
 }
 
 export interface SelfAuthorDecision {
@@ -116,10 +122,12 @@ export interface SelfAuthorDecision {
 /**
  * Decide whether this Stop should block and ask the running session to write
  * its own observations. Gated by an activity threshold (not per-stop) and the
- * Stop re-entry flag (so the self-authoring turn itself stops cleanly).
+ * Stop re-entry flag (so the self-authoring turn itself stops cleanly). When the
+ * real-time rider is on, the Stop stays transparent (non-blocking).
  */
 export function decideSelfAuthor(input: SelfAuthorInput): SelfAuthorDecision {
   if (!input.enabled) return { block: false };
+  if (input.realtimeEnabled) return { block: false };
   if (input.stopHookActive) return { block: false };
   if (input.substantiveCount < input.threshold) return { block: false };
   return { block: true };
