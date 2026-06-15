@@ -91,9 +91,13 @@ export async function waitForPortFree(port: number, timeoutMs: number = 10000): 
   return false;
 }
 
-export async function httpShutdown(port: number): Promise<boolean> {
+export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 'stop'): Promise<boolean> {
   try {
-    const result = await httpRequestToWorker(port, '/api/admin/shutdown', 'POST');
+    // The CLI restart path stops the worker through this same endpoint; the
+    // reason tag lets the worker spawn its own successor (worker-shutdown.ts
+    // restart handoff) instead of staying kill-only.
+    const endpointPath = reason === 'restart' ? '/api/admin/shutdown?reason=restart' : '/api/admin/shutdown';
+    const result = await httpRequestToWorker(port, endpointPath, 'POST');
     if (!result.ok) {
       logger.warn('SYSTEM', 'Shutdown request returned error', { status: result.statusCode });
       return false;
