@@ -1,6 +1,6 @@
 
 import path from 'path';
-import { existsSync } from 'fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
 import { spawn } from 'child_process';
 import { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
