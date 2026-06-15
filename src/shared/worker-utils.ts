@@ -329,7 +329,7 @@ export async function ensureWorkerRunning(): Promise<boolean> {
         error: error instanceof Error ? error.message : String(error),
       });
     }
-    return true;
+    // Fall through to (re)spawn + readiness wait below.
   }
 
   const runtimePath = resolveWorkerRuntimePath();
