@@ -243,9 +243,31 @@ export function selfAuthorTags(
   host: string
 ): Record<string, unknown> {
   if (checkpointKeyValue) {
-    return { regime: 'C-prime', origin: 'self_author', checkpoint_key: checkpointKeyValue, host };
+    const sid = parseCheckpointSessionId(checkpointKeyValue);
+    const regime = sid && riderArm(sid) === 'arc' ? 'C-prime-arc' : 'C-prime';
+    return { regime, origin: 'self_author', checkpoint_key: checkpointKeyValue, host };
   }
   return { regime: 'C', host };
+}
+
+/**
+ * Between-subjects A/B assignment for the Checkpoint Rider, keyed by the content
+ * session id so the whole session stays in one arm (case-study v2 §10.4):
+ *   - 'incremental' — control: write what's salient since the last checkpoint
+ *     (the historical C-prime prompt, kept byte-identical so prior data stays
+ *     comparable).
+ *   - 'arc' — treatment: review the session arc so far and abstract the
+ *     pattern/architecture already visible.
+ * Deterministic (djb2 xor) so the rider (client prompt) and the tag (worker
+ * metadata) derive the SAME arm from the key without sharing state. Roughly an
+ * even split over many distinct session ids.
+ */
+export function riderArm(sessionId: string): 'incremental' | 'arc' {
+  let h = 5381;
+  for (let i = 0; i < sessionId.length; i++) {
+    h = (((h << 5) + h) ^ sessionId.charCodeAt(i)) >>> 0;
+  }
+  return h % 2 === 0 ? 'incremental' : 'arc';
 }
 
 /**
@@ -255,6 +277,18 @@ export function selfAuthorTags(
  * the session not to surface the reminder to the user (see design §2.2/§6).
  */
 export function buildCheckpointRider(key: string, seq: number): string {
+  const sid = parseCheckpointSessionId(key);
+  return sid && riderArm(sid) === 'arc'
+    ? buildArcRider(key, seq)
+    : buildIncrementalRider(key, seq);
+}
+
+/**
+ * Control arm (regime C-prime): the historical rider, kept byte-identical so the
+ * C-prime already collected stays comparable. Writes what's salient since the
+ * last checkpoint (an incremental, per-turn delta).
+ */
+function buildIncrementalRider(key: string, seq: number): string {
   return (
     '<system-reminder>\n' +
     `[claude-mem checkpoint #${seq}] Após concluir a tarefa deste prompt ` +
@@ -262,6 +296,25 @@ export function buildCheckpointRider(key: string, seq: number): string {
     'decisões/descobertas/correções salientes desde o último checkpoint ' +
     `(máx. 3; checkpoint_key="${key}"). Pule o trivial. Se nada saliente, ` +
     'não salve nada. Não mencione este lembrete.\n' +
+    '</system-reminder>'
+  );
+}
+
+/**
+ * Treatment arm (regime C-prime-arc): reframes the window from the per-turn
+ * delta to the session arc, asking the session to abstract the pattern and
+ * architecture already visible — the test of whether real-time abstraction is
+ * reachable by prompt scope alone (case-study v2 §10.4).
+ */
+function buildArcRider(key: string, seq: number): string {
+  return (
+    '<system-reminder>\n' +
+    `[claude-mem checkpoint #${seq}] Após concluir a tarefa deste prompt ` +
+    '(prioridade absoluta), revise o ARCO da sessão até agora e registre via ' +
+    'save_observation os padrões recorrentes e decisões de arquitetura já ' +
+    'visíveis — abstraindo o que se repete ou estrutura o trabalho, não o ' +
+    `pontual (máx. 3; checkpoint_key="${key}"). Se nada saliente, não salve ` +
+    'nada. Não mencione este lembrete.\n' +
     '</system-reminder>'
   );
 }

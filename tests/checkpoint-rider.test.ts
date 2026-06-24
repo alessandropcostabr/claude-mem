@@ -10,6 +10,7 @@ import {
   readCheckpointState,
   writeCheckpointState,
   selfAuthorTags,
+  riderArm,
   parseCheckpointSessionId,
   decideSelfAuthor,
 } from '../src/shared/self-author';
@@ -143,17 +144,53 @@ describe('parseCheckpointSessionId (recover the content session id from a checkp
 });
 
 describe('selfAuthorTags (regime discriminator for §10)', () => {
-  it('tags a checkpoint observation as regime C-prime with origin, key and host', () => {
+  it('tags a checkpoint observation with the session arm, plus origin, key and host', () => {
+    const expectedRegime = riderArm('s') === 'arc' ? 'C-prime-arc' : 'C-prime';
     expect(selfAuthorTags('selfauthor:s:1', 'hyper')).toEqual({
-      regime: 'C-prime',
+      regime: expectedRegime,
       origin: 'self_author',
       checkpoint_key: 'selfauthor:s:1',
       host: 'hyper',
     });
   });
 
+  it('tags an arc-arm checkpoint as C-prime-arc and an incremental-arm one as C-prime', () => {
+    // pick concrete session ids landing on each arm
+    const incrementalSid = ['a', 'b', 'c', 'd', 'e', 'f'].find((s) => riderArm(s) === 'incremental')!;
+    const arcSid = ['a', 'b', 'c', 'd', 'e', 'f'].find((s) => riderArm(s) === 'arc')!;
+    expect(selfAuthorTags(`selfauthor:${incrementalSid}:1`, 'h').regime).toBe('C-prime');
+    expect(selfAuthorTags(`selfauthor:${arcSid}:1`, 'h').regime).toBe('C-prime-arc');
+  });
+
   it('tags a non-checkpoint (Stop) observation as regime C with host', () => {
     expect(selfAuthorTags(undefined, 'darkstar')).toEqual({ regime: 'C', host: 'darkstar' });
+  });
+});
+
+describe('riderArm (between-subjects A/B split, keyed by session id)', () => {
+  it('is deterministic per session id', () => {
+    expect(riderArm('session-xyz')).toBe(riderArm('session-xyz'));
+  });
+
+  it('assigns sessions to both arms (non-degenerate split)', () => {
+    const arms = new Set(Array.from({ length: 60 }, (_, i) => riderArm(`sess-${i}`)));
+    expect(arms).toEqual(new Set(['incremental', 'arc']));
+  });
+
+  it('the rider prompt and the regime tag always agree on the arm for a given session', () => {
+    for (const sid of ['a', 'b', 'sess-1', 'xyz', 'session-abc-123', 'darkstar-9', 'q']) {
+      const key = checkpointKey(sid, 1);
+      const riderIsArc = buildCheckpointRider(key, 1).includes('ARCO');
+      const tagIsArc = selfAuthorTags(key, 'h').regime === 'C-prime-arc';
+      expect(riderIsArc).toBe(tagIsArc);
+    }
+  });
+
+  it('the arc rider asks to abstract pattern/architecture; the incremental one rides the delta', () => {
+    const arcSid = ['a', 'b', 'c', 'd', 'e', 'f'].find((s) => riderArm(s) === 'arc')!;
+    const incSid = ['a', 'b', 'c', 'd', 'e', 'f'].find((s) => riderArm(s) === 'incremental')!;
+    expect(buildCheckpointRider(checkpointKey(arcSid, 1), 1)).toContain('arquitetura');
+    expect(buildCheckpointRider(checkpointKey(incSid, 1), 1)).toContain('desde o último checkpoint');
   });
 });
 
