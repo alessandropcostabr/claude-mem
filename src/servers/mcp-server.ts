@@ -514,6 +514,27 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
+      // server-beta: the local worker /api/search reads the FROZEN local SQLite (and a
+      // retired Chroma) → 0 observations. Route to the PG-backed /v1/search ONLY when it
+      // can serve the request faithfully: server-beta available, a text query, observations
+      // result type, and no filter /v1/search can't honor (it takes only projectId/query/
+      // limit). Otherwise fall back to the worker, which applies platformSource/type/
+      // obs_type/date/offset/orderBy and handles prompt/session queries.
+      const sb = resolveServerBetaToolContext();
+      const hasText = typeof args?.query === 'string' && args.query.trim().length > 0;
+      const typeIsObservations = args?.type === undefined || args?.type === 'observations';
+      const hasUnsupportedFilter =
+        args?.platformSource !== undefined || args?.project !== undefined ||
+        args?.obs_type !== undefined || args?.dateStart !== undefined ||
+        args?.dateEnd !== undefined || args?.offset !== undefined || args?.orderBy !== undefined;
+      if (sb && sb.available && hasText && typeIsObservations && !hasUnsupportedFilter) {
+        const request: ServerBetaSearchObservationsRequest = {
+          projectId: sb.projectId,
+          query: args.query,
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+        };
+        return formatJsonResult(await sb.client.searchObservations(request));
+      }
       const endpoint = TOOL_ENDPOINT_MAP['search'];
       return await callWorkerAPI(endpoint, args);
     }
