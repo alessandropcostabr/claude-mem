@@ -267,7 +267,13 @@ export function riderArm(sessionId: string): 'incremental' | 'arc' {
   for (let i = 0; i < sessionId.length; i++) {
     h = (((h << 5) + h) ^ sessionId.charCodeAt(i)) >>> 0;
   }
-  return h % 2 === 0 ? 'incremental' : 'arc';
+  // 2026-06-29: A/B do .254 virado para 100% ARCO — o baseline incremental já está
+  // saturado (313 obs / 49 sessões) e a célula rara é C-prime-arc; forçar o braço-arco
+  // acelera o acúmulo sem novo host/deploy. Prompt (buildCheckpointRider) e tag (selfAuthorTags)
+  // ambos derivam daqui, então seguem concordando. Reverter para o 50/50:
+  //   return h % 2 === 0 ? 'incremental' : 'arc';
+  void h;
+  return 'arc';
 }
 
 /**
