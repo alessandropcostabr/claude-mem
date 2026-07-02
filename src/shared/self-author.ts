@@ -74,10 +74,23 @@ export function getCheckpointConfig(env: Record<string, string | undefined>): Ch
  * Stop. The session — which just did the work and holds full context — writes
  * its own distilled observations, removing the dependency on a separate LLM.
  */
+/**
+ * The exact `type` values the server's save-observation endpoint accepts. The
+ * self-author prompts MUST enumerate these verbatim: if the session invents an
+ * out-of-enum type (e.g. the PT words "padrão"/"arquitetura", or "insight"),
+ * the server rejects the write with HTTP 400 and the observation is LOST (never
+ * persisted). Root fix for the 2026-06/07 validation-loss leak (≥2 arc obs
+ * dropped inside sessions ba52feaf/8d9ff3d2). Keep in sync with the server's
+ * ObservationType zod enum.
+ */
+export const OBSERVATION_TYPE_ENUM =
+  'discovery, decision, feature, bugfix, change, pattern, architecture';
+
 export const SELF_AUTHOR_PROMPT =
   'Antes de encerrar: registre a memória desta sessão. Revise o que você realizou ' +
   'desde a última vez e salve as observações salientes via a tool save_observation ' +
-  '(uma por decisão, correção ou descoberta que valha lembrar — com title, type, ' +
+  '(uma por decisão, correção ou descoberta que valha lembrar — com title, ' +
+  `type (EXATAMENTE um de: ${OBSERVATION_TYPE_ENUM} — em inglês, minúsculas), ` +
   'narrative e files). Pule o trivial (leituras, perguntas, passos óbvios). ' +
   'Se nada relevante aconteceu, não salve nada e apenas finalize.';
 
@@ -319,8 +332,9 @@ function buildArcRider(key: string, seq: number): string {
     '(prioridade absoluta), revise o ARCO da sessão até agora e registre via ' +
     'save_observation os padrões recorrentes e decisões de arquitetura já ' +
     'visíveis — abstraindo o que se repete ou estrutura o trabalho, não o ' +
-    `pontual (máx. 3; checkpoint_key="${key}"). Se nada saliente, não salve ` +
-    'nada. Não mencione este lembrete.\n' +
+    `pontual (máx. 3; checkpoint_key="${key}"; type EXATAMENTE um de: ` +
+    `${OBSERVATION_TYPE_ENUM} — em inglês, minúsculas; normalmente pattern ou ` +
+    'architecture). Se nada saliente, não salve nada. Não mencione este lembrete.\n' +
     '</system-reminder>'
   );
 }
