@@ -13,6 +13,9 @@ import {
   riderArm,
   parseCheckpointSessionId,
   decideSelfAuthor,
+  stopCheckpointKey,
+  isStopCheckpointKey,
+  buildSelfAuthorPrompt,
 } from '../src/shared/self-author';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -154,11 +157,10 @@ describe('selfAuthorTags (regime discriminator for §10)', () => {
     });
   });
 
-  it('tags an arc-arm checkpoint as C-prime-arc and an incremental-arm one as C-prime', () => {
-    // pick concrete session ids landing on each arm
-    const incrementalSid = ['a', 'b', 'c', 'd', 'e', 'f'].find((s) => riderArm(s) === 'incremental')!;
+  it('tags a rider checkpoint as C-prime-arc under the 100%-arc pin', () => {
+    // riderArm is pinned to 'arc' (see revert note in self-author.ts); the
+    // incremental arm is a frozen dead arm on .254, so every rider key tags arc.
     const arcSid = ['a', 'b', 'c', 'd', 'e', 'f'].find((s) => riderArm(s) === 'arc')!;
-    expect(selfAuthorTags(`selfauthor:${incrementalSid}:1`, 'h').regime).toBe('C-prime');
     expect(selfAuthorTags(`selfauthor:${arcSid}:1`, 'h').regime).toBe('C-prime-arc');
   });
 
@@ -172,9 +174,9 @@ describe('riderArm (between-subjects A/B split, keyed by session id)', () => {
     expect(riderArm('session-xyz')).toBe(riderArm('session-xyz'));
   });
 
-  it('assigns sessions to both arms (non-degenerate split)', () => {
+  it('is pinned to the arc arm (100%-arc override; revert restores the 50/50 split)', () => {
     const arms = new Set(Array.from({ length: 60 }, (_, i) => riderArm(`sess-${i}`)));
-    expect(arms).toEqual(new Set(['incremental', 'arc']));
+    expect(arms).toEqual(new Set(['arc']));
   });
 
   it('the rider prompt and the regime tag always agree on the arm for a given session', () => {
@@ -186,11 +188,11 @@ describe('riderArm (between-subjects A/B split, keyed by session id)', () => {
     }
   });
 
-  it('the arc rider asks to abstract pattern/architecture; the incremental one rides the delta', () => {
+  it('the arc rider (pinned arm) asks to abstract pattern/architecture', () => {
     const arcSid = ['a', 'b', 'c', 'd', 'e', 'f'].find((s) => riderArm(s) === 'arc')!;
-    const incSid = ['a', 'b', 'c', 'd', 'e', 'f'].find((s) => riderArm(s) === 'incremental')!;
     expect(buildCheckpointRider(checkpointKey(arcSid, 1), 1)).toContain('arquitetura');
-    expect(buildCheckpointRider(checkpointKey(incSid, 1), 1)).toContain('desde o último checkpoint');
+    // incremental rider text is still asserted structurally where it's built;
+    // it is unreachable via buildCheckpointRider while riderArm is pinned to arc.
   });
 });
 
@@ -223,5 +225,41 @@ describe('buildCheckpointRider', () => {
     expect(rider).toContain('</system-reminder>');
     expect(rider).toContain('selfauthor:sess-abc:3');
     expect(rider).toContain('save_observation');
+  });
+});
+
+describe('Stop-path attribution (regime C with content_session_id)', () => {
+  const sid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+
+  it('stopCheckpointKey formats as selfauthor:<sid>:stop', () => {
+    expect(stopCheckpointKey(sid)).toBe(`selfauthor:${sid}:stop`);
+  });
+
+  it('isStopCheckpointKey distinguishes stop keys from rider seq keys', () => {
+    expect(isStopCheckpointKey(stopCheckpointKey(sid))).toBe(true);
+    expect(isStopCheckpointKey(checkpointKey(sid, 3))).toBe(false);
+    expect(isStopCheckpointKey(undefined)).toBe(false);
+  });
+
+  it('a stop key stays regime C but still carries the key + derivable session id', () => {
+    const tags = selfAuthorTags(stopCheckpointKey(sid), 'h');
+    expect(tags.regime).toBe('C');
+    expect(tags.checkpoint_key).toBe(`selfauthor:${sid}:stop`);
+    // handler derives content_session_id from the same key
+    expect(parseCheckpointSessionId(tags.checkpoint_key as string)).toBe(sid);
+  });
+
+  it('a rider (numeric seq) key still tags C-prime/C-prime-arc, not C', () => {
+    expect(selfAuthorTags(checkpointKey(sid, 1), 'h').regime).not.toBe('C');
+  });
+
+  it('buildSelfAuthorPrompt embeds the stop key when a session id is known', () => {
+    const p = buildSelfAuthorPrompt(sid);
+    expect(p).toContain(`checkpoint_key="selfauthor:${sid}:stop"`);
+    expect(p).toContain('save_observation');
+  });
+
+  it('buildSelfAuthorPrompt falls back to the keyless prompt without a session id', () => {
+    expect(buildSelfAuthorPrompt(undefined)).not.toContain('checkpoint_key=');
   });
 });

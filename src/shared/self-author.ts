@@ -94,6 +94,35 @@ export const SELF_AUTHOR_PROMPT =
   'narrative e files). Pule o trivial (leituras, perguntas, passos óbvios). ' +
   'Se nada relevante aconteceu, não salve nada e apenas finalize.';
 
+/**
+ * Stop-path checkpoint key: `selfauthor:<sid>:stop`. Lets a Stop self-author
+ * save carry its session id (→ `content_session_id`) while staying regime C
+ * (the Stop vantage), so Stop obs are attributable like the rider's C-prime obs.
+ * Fixes the attribution gap where Stop saves landed with NULL content_session_id
+ * (the handler only knows the session via the checkpoint_key). See §DATA-INTEGRITY.
+ */
+export function stopCheckpointKey(sessionId: string): string {
+  return `selfauthor:${sessionId}:stop`;
+}
+
+/** True when a checkpoint key is a Stop-path key (`...:stop`), not a rider seq. */
+export function isStopCheckpointKey(key: string | undefined | null): boolean {
+  return !!key && key.split(':').pop() === 'stop';
+}
+
+/**
+ * Stop self-author prompt carrying the session's stop checkpoint key so the
+ * saved observation is attributable to its session (`content_session_id`) and
+ * tagged regime C. Falls back to the keyless prompt when no session id is known.
+ */
+export function buildSelfAuthorPrompt(sessionId: string | undefined | null): string {
+  if (!sessionId) return SELF_AUTHOR_PROMPT;
+  return (
+    SELF_AUTHOR_PROMPT +
+    ` Passe em cada save_observation o campo checkpoint_key="${stopCheckpointKey(sessionId)}".`
+  );
+}
+
 const SUBSTANTIVE_TOOLS = new Set([
   'Edit',
   'Write',
@@ -256,6 +285,12 @@ export function selfAuthorTags(
   host: string
 ): Record<string, unknown> {
   if (checkpointKeyValue) {
+    // Stop-path key (`...:stop`) stays regime C (the Stop vantage) but still
+    // carries the key so the handler derives content_session_id. Rider keys
+    // (numeric seq) tag C-prime / C-prime-arc per the A/B arm.
+    if (isStopCheckpointKey(checkpointKeyValue)) {
+      return { regime: 'C', origin: 'self_author', checkpoint_key: checkpointKeyValue, host };
+    }
     const sid = parseCheckpointSessionId(checkpointKeyValue);
     const regime = sid && riderArm(sid) === 'arc' ? 'C-prime-arc' : 'C-prime';
     return { regime, origin: 'self_author', checkpoint_key: checkpointKeyValue, host };

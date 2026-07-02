@@ -17,7 +17,7 @@ import {
   getSubstantiveCount,
   decideSelfAuthor,
   resetSubstantiveCount,
-  SELF_AUTHOR_PROMPT,
+  buildSelfAuthorPrompt,
 } from '../../shared/self-author.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 
@@ -58,7 +58,7 @@ function maybeSelfAuthor(input: NormalizedHookInput, fallthrough: HookResult): H
       substantiveCount: count,
       threshold: cfg.threshold,
     });
-    return { continue: true, decision: 'block', reason: SELF_AUTHOR_PROMPT };
+    return { continue: true, decision: 'block', reason: buildSelfAuthorPrompt(input.sessionId) };
   } catch (err) {
     logger.debug('HOOK', 'self-author decision failed (non-fatal)', {
       error: err instanceof Error ? err.message : String(err),
