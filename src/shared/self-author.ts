@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmS
 import { homedir } from 'os';
 import { join } from 'path';
 
-export const DEFAULT_SELF_AUTHOR_THRESHOLD = 4;
+export const DEFAULT_SELF_AUTHOR_THRESHOLD = 8;
 
 /** Default on-disk location for per-session substantive counters. */
 export function defaultStateDir(): string {
@@ -46,8 +46,8 @@ export interface CheckpointConfig {
   fallbackDelayMs: number;
 }
 
-const DEFAULT_COOLDOWN_PROMPTS = 2;
-const DEFAULT_MAX_OBS_PER_CHECKPOINT = 3;
+const DEFAULT_COOLDOWN_PROMPTS = 3;
+const DEFAULT_MAX_OBS_PER_CHECKPOINT = 2;
 const DEFAULT_FALLBACK_DELAY_MS = 15 * 60 * 1000;
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {
@@ -364,12 +364,15 @@ function buildArcRider(key: string, seq: number): string {
   return (
     '<system-reminder>\n' +
     `[claude-mem checkpoint #${seq}] Após concluir a tarefa deste prompt ` +
-    '(prioridade absoluta), revise o ARCO da sessão até agora e registre via ' +
-    'save_observation os padrões recorrentes e decisões de arquitetura já ' +
-    'visíveis — abstraindo o que se repete ou estrutura o trabalho, não o ' +
-    `pontual (máx. 3; checkpoint_key="${key}"; type EXATAMENTE um de: ` +
+    '(prioridade absoluta), revise o ARCO da sessão até agora e avalie se JÁ ' +
+    'EMERGIU um padrão genuinamente RECORRENTE (visto ≥2×) ou uma decisão de ' +
+    'arquitetura consolidada. O SILÊNCIO É O PADRÃO — na dúvida, ou se for ' +
+    'pontual/de um turno só, NÃO salve nada. Só havendo abstração real e útil a ' +
+    'uma sessão futura, registre via save_observation, ANCORANDO em específicos ' +
+    'verificáveis (file:line, ids, commits, contagens) mesmo ao generalizar ' +
+    `(máx. 2; checkpoint_key="${key}"; type EXATAMENTE um de: ` +
     `${OBSERVATION_TYPE_ENUM} — em inglês, minúsculas; normalmente pattern ou ` +
-    'architecture). Se nada saliente, não salve nada. Não mencione este lembrete.\n' +
+    'architecture). Não mencione este lembrete.\n' +
     '</system-reminder>'
   );
 }

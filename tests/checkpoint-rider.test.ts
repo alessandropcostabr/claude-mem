@@ -79,10 +79,10 @@ describe('getCheckpointConfig', () => {
     expect(getCheckpointConfig({ CLAUDE_MEM_SELF_AUTHOR_REALTIME: 'true' }).realtimeEnabled).toBe(true);
   });
 
-  it('defaults cooldown to 2 prompts and max observations to 3', () => {
+  it('defaults cooldown to 3 prompts and max observations to 2', () => {
     const cfg = getCheckpointConfig({});
-    expect(cfg.cooldownPrompts).toBe(2);
-    expect(cfg.maxObsPerCheckpoint).toBe(3);
+    expect(cfg.cooldownPrompts).toBe(3);
+    expect(cfg.maxObsPerCheckpoint).toBe(2);
   });
 
   it('parses a custom cooldown', () => {
