@@ -133,6 +133,7 @@ export interface ServerBetaAddObservationRequest {
   /** CC content session id; lets the server attribute the observation to its
    * session when no serverSessionId (PG row id) is known at write time. */
   contentSessionId?: string | null;
+  platformSource?: string | null;
   kind?: string;
   content: string;
   metadata?: Record<string, unknown>;
@@ -331,6 +332,7 @@ export class ServerBetaClient {
       content: input.content,
       ...(input.serverSessionId !== undefined ? { serverSessionId: input.serverSessionId } : {}),
       ...(input.contentSessionId !== undefined ? { contentSessionId: input.contentSessionId } : {}),
+      ...(input.platformSource !== undefined ? { platformSource: input.platformSource } : {}),
       ...(input.kind !== undefined ? { kind: input.kind } : {}),
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
     };

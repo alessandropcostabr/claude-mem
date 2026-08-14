@@ -3,6 +3,7 @@
 import type { JsonObject, PostgresQueryable } from './utils.js';
 import { assertProjectOwnership, deterministicKey, newId, queryOne, toDate, toEpoch, toJsonObject } from './utils.js';
 import type { PostgresAgentEvent } from './agent-events.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 export interface PostgresServerSession {
   id: string;
@@ -144,16 +145,26 @@ export class PostgresServerSessionsRepository {
     contentSessionId: string;
     projectId: string;
     teamId: string;
+    platformSource?: string | null;
   }): Promise<string | null> {
+    const hasPlatformScope = Object.prototype.hasOwnProperty.call(input, 'platformSource');
+    const platformSource = hasPlatformScope && input.platformSource !== null
+      ? normalizePlatformSource(input.platformSource)
+      : null;
     const row = await queryOne<{ id: string }>(
       this.client,
       `
         SELECT id FROM server_sessions
         WHERE content_session_id = $1 AND project_id = $2 AND team_id = $3
+          AND (
+            $4::boolean = false
+            OR ($5::text IS NULL AND platform_source IS NULL)
+            OR platform_source = $5
+          )
         ORDER BY started_at DESC
         LIMIT 1
       `,
-      [input.contentSessionId, input.projectId, input.teamId]
+      [input.contentSessionId, input.projectId, input.teamId, hasPlatformScope, platformSource]
     );
     return row ? row.id : null;
   }

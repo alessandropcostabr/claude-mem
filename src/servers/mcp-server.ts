@@ -292,6 +292,8 @@ function requireServerBetaForObservationTool(toolName: string): ServerBetaAvaila
 interface ObservationAddArgs {
   projectId?: string;
   serverSessionId?: string | null;
+  contentSessionId?: string | null;
+  platformSource?: string | null;
   kind?: string;
   content: string;
   metadata?: Record<string, unknown>;
@@ -310,6 +312,8 @@ async function handleObservationAdd(
       projectId,
       content: args.content,
       ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+      ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
+      ...(args.platformSource !== undefined ? { platformSource: args.platformSource } : {}),
       ...(args.kind !== undefined ? { kind: args.kind } : {}),
       ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
     };
@@ -684,12 +688,14 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   // MCP clients keep working without rewrites. (Plan line 753.)
   {
     name: 'observation_add',
-    description: 'Insert a manual observation directly into server-beta storage. Calls /v1/memories — does NOT enqueue generation. Server-beta runtime only. Params: content (required), projectId (optional, falls back to settings), serverSessionId, kind, metadata.',
+    description: 'Insert a manual observation directly into server-beta storage. Calls /v1/memories — does NOT enqueue generation. Server-beta runtime only.',
     inputSchema: {
       type: 'object',
       properties: {
         projectId: { type: 'string', description: 'Project id (falls back to CLAUDE_MEM_SERVER_BETA_PROJECT_ID)' },
         serverSessionId: { type: 'string', description: 'Optional server_session_id to attach the observation to' },
+        contentSessionId: { type: 'string', description: 'Optional host session id for server-side linkage' },
+        platformSource: { type: 'string', description: 'Optional host platform scope, such as claude or codex' },
         kind: { type: 'string', description: 'Observation kind (default: manual)' },
         content: { type: 'string', description: 'Observation content (required)' },
         metadata: { type: 'object', description: 'Free-form metadata object', additionalProperties: true },
