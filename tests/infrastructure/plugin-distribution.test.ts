@@ -84,6 +84,19 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     expect(marketplace.plugins[0].source.path).toBe('./plugin');
   });
 
+  it('re-injects Codex memory on every SessionStart source that starts a fresh context', () => {
+    // Codex emits startup, resume, clear and compact (SessionStartSource in
+    // codex-rs/hooks/src/events/session_start.rs). clear and compact both hand
+    // the model an empty context, so the injection hook has to run for them or
+    // the session continues with no memory.
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const matchers = codexHooks.hooks.SessionStart.map((entry: any) => entry.matcher);
+
+    expect(matchers).toHaveLength(1);
+    for (const source of ['startup', 'resume', 'clear', 'compact']) {
+      expect(matchers[0].split('|')).toContain(source);
+    }
+  });
   it('MCP launcher can recover without plugin root environment variables', () => {
     const mcpPath = path.join(projectRoot, 'plugin/.mcp.json');
     const mcp = JSON.parse(readFileSync(mcpPath, 'utf-8'));
