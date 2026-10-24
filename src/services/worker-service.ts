@@ -108,16 +108,15 @@ import { FileReadTracking } from './sqlite/metrics/FileReadTracking.js';
 export interface StatusOutput {
   continue: true;
   suppressOutput: true;
-  status: 'ready' | 'error';
-  message?: string;
+  systemMessage?: string;
 }
 
 export function buildStatusOutput(status: 'ready' | 'error', message?: string): StatusOutput {
+  const systemMessage = message || (status === 'error' ? 'Failed to start claude-mem worker' : undefined);
   return {
     continue: true,
     suppressOutput: true,
-    status,
-    ...(message && { message })
+    ...(systemMessage && { systemMessage })
   };
 }
 
