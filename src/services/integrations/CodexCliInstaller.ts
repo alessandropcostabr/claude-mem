@@ -378,11 +378,8 @@ export async function installCodexCli(marketplaceRootOverride?: string): Promise
     console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
     registerCodexMarketplace(marketplaceRoot);
     enableCodexPluginConfig();
-    runCodexBestEffort(
-      ['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME],
-      'Refreshed Codex marketplace and installed plugin cache.',
-      'Could not refresh Codex marketplace cache; reinstall or upgrade claude-mem from /plugins if Codex still uses old MCP config',
-    );
+    runCodex(['plugin', 'add', CODEX_PLUGIN_ID]);
+    console.log('  Installed Codex plugin cache from the local marketplace.');
     if (!cleanupLegacyCodexAgentsMdContext()) {
       console.warn(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
     }
