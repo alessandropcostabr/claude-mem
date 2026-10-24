@@ -97,6 +97,14 @@ describe('Plugin Distribution - Codex Marketplace', () => {
       expect(matchers[0].split('|')).toContain(source);
     }
   });
+
+  it('marks each Codex compaction for one-shot reinjection', () => {
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    expect(codexHooks.hooks.PostCompact).toHaveLength(1);
+    expect(codexHooks.hooks.PostCompact[0].matcher).toBeUndefined();
+    expect(codexHooks.hooks.PostCompact[0].hooks[0].command)
+      .toContain('hook codex post-compact');
+  });
   it('MCP launcher can recover without plugin root environment variables', () => {
     const mcpPath = path.join(projectRoot, 'plugin/.mcp.json');
     const mcp = JSON.parse(readFileSync(mcpPath, 'utf-8'));
@@ -282,6 +290,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, string>> = {
     'PreToolUse.0.0': codexHook(['hook', 'codex', 'file-context']),
     'PostToolUse.0.0': codexHook(['hook', 'codex', 'observation']),
     'Stop.0.0': codexHook(['hook', 'codex', 'summarize']),
+    'PostCompact.0.0': codexHook(['hook', 'codex', 'post-compact']),
   },
 };
 

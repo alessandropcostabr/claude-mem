@@ -207,7 +207,23 @@ describe('Codex CLI Compatibility (#744)', () => {
         },
       }) as any;
 
-      expect(output).toEqual({ continue: true, suppressOutput: true });
+      expect(output).toEqual({ continue: true });
+    });
+
+    it('keeps Codex compaction source and bounded subagent identity', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const input = codexAdapter.normalizeInput({
+        hook_event_name: 'PostCompact',
+        session_id: 'codex-session',
+        source: 'compact',
+        cwd: '/tmp',
+        agent_id: 'agent-1',
+        agent_type: 'worker',
+      });
+
+      expect(input.sessionSource).toBe('compact');
+      expect(input.agentId).toBe('agent-1');
+      expect(input.agentType).toBe('worker');
     });
   });
 
