@@ -18,6 +18,7 @@ export {
   extractPriorMessages,
   assembleContext,
   renderEmptyState,
+  cwdToDashed,
 } from './timeline-assembly.js';
 
 export function queryObservations(

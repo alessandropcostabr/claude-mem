@@ -414,18 +414,18 @@ describe('Hook Lifecycle - Claude Code Adapter', () => {
     expect(await fmt({ systemMessage: 0 })).toEqual({});
   });
 
-  it('should strip all non-contract fields', async () => {
+  it('should preserve Stop control fields and strip non-contract fields', async () => {
     expect(await fmt({
       continue: false,
       suppressOutput: false,
       systemMessage: 'msg',
       exitCode: 2,
       hookSpecificOutput: undefined,
-    })).toEqual({ systemMessage: 'msg' });
+    })).toEqual({ continue: false, systemMessage: 'msg' });
   });
 
   it('should only emit keys from the Claude Code hook contract', async () => {
-    const allowedKeys = new Set(['hookSpecificOutput', 'systemMessage', 'decision', 'reason']);
+    const allowedKeys = new Set(['hookSpecificOutput', 'systemMessage', 'continue', 'decision', 'reason']);
     const cases = [
       {},
       { systemMessage: 'x' },

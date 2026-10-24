@@ -174,27 +174,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
 
       const insertInput = this.toAgentEventInput(body, teamId);
-      // Link events to their session: clients send `contentSessionId` on /v1/events
-      // but not `serverSessionId`, leaving tool_use events unlinked. The session was
-      // already registered via /v1/sessions/start, so resolve it here (scoped by
-      // project+team — no cross-tenant linkage).
-      if (!insertInput.serverSessionId && body.contentSessionId) {
-        // Best-effort: a lookup failure (transient DB/pool error) must not fail
-        // ingestion — fall through and store the event unlinked (prior behavior).
-        try {
-          const linkedId = await new PostgresServerSessionsRepository(this.options.pool)
-            .findIdByContentSessionId({
-              contentSessionId: body.contentSessionId,
-              projectId: body.projectId,
-              teamId,
-            });
-          if (linkedId) insertInput.serverSessionId = linkedId;
-        } catch (err) {
-          logger.warn('HTTP', 'session linkage lookup failed; storing event unlinked', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
+      await this.applyContentSessionLinks([insertInput], [req.body], teamId);
       let event: PostgresAgentEvent;
       let outbox: PostgresObservationGenerationJob | null = null;
       let enqueueState: EnqueueOutcome = 'skipped';
@@ -273,6 +253,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       }
 
       const inputs = result.data.map(item => this.toAgentEventInput(item, teamId));
+      await this.applyContentSessionLinks(inputs, req.body, teamId);
 
       let inserted: { event: PostgresAgentEvent; outbox: PostgresObservationGenerationJob | null }[] = [];
       let enqueueResults: EnqueueOutcome[] = [];
@@ -1098,6 +1079,47 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         : {},
       occurredAt: new Date(occurredAtEpoch),
     };
+  }
+
+  private async applyContentSessionLinks(
+    inputs: CreatePostgresAgentEventInput[],
+    rawBodies: unknown[],
+    teamId: string,
+  ): Promise<void> {
+    const sessions = new PostgresServerSessionsRepository(this.options.pool);
+    const cache = new Map<string, string | null>();
+
+    for (let index = 0; index < inputs.length; index += 1) {
+      const input = inputs[index]!;
+      if (input.serverSessionId || !input.contentSessionId) continue;
+
+      const platformScope = this.sessionLookupPlatformScope(rawBodies[index]);
+      const cacheKey = JSON.stringify([
+        input.contentSessionId,
+        input.projectId,
+        Object.prototype.hasOwnProperty.call(platformScope, 'platformSource'),
+        platformScope.platformSource ?? null,
+      ]);
+
+      try {
+        let linkedId = cache.get(cacheKey);
+        if (!cache.has(cacheKey)) {
+          linkedId = await sessions.findIdByContentSessionId({
+            contentSessionId: input.contentSessionId,
+            projectId: input.projectId,
+            teamId,
+            ...platformScope,
+          });
+          cache.set(cacheKey, linkedId);
+        }
+        if (linkedId) input.serverSessionId = linkedId;
+      } catch (err) {
+        cache.set(cacheKey, null);
+        logger.warn('HTTP', 'session linkage lookup failed; storing event unlinked', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   }
 
   private requireTeamId(req: Request, res: Response): string | null {

@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { ServerV1PostgresRoutes } from '../../../src/server/routes/v1/ServerV1PostgresRoutes.js';
-import { DisabledServerQueueManager } from '../../../src/server/runtime/types.js';
+import { DisabledServerBetaQueueManager } from '../../../src/server/runtime/types.js';
 import type { CreatePostgresAgentEventInput } from '../../../src/storage/postgres/agent-events.js';
 import type { PostgresPool } from '../../../src/storage/postgres/pool.js';
 
@@ -28,7 +28,7 @@ describe('ServerV1PostgresRoutes content session linkage', () => {
     } as unknown as PostgresPool;
     const routes = new ServerV1PostgresRoutes({
       pool,
-      queueManager: new DisabledServerQueueManager('unit test'),
+      queueManager: new DisabledServerBetaQueueManager('unit test'),
     });
     const inputs = [
       createInput({ platformSource: 'cursor', payload: { index: 1 } }),
@@ -89,7 +89,7 @@ describe('ServerV1PostgresRoutes content session linkage', () => {
     } as unknown as PostgresPool;
     const routes = new ServerV1PostgresRoutes({
       pool,
-      queueManager: new DisabledServerQueueManager('unit test'),
+      queueManager: new DisabledServerBetaQueueManager('unit test'),
     });
     const inputs = [
       createInput({ platformSource: null, payload: { index: 1 } }),
@@ -127,7 +127,7 @@ describe('ServerV1PostgresRoutes content session linkage', () => {
     const routesWith = (pool: unknown) =>
       new ServerV1PostgresRoutes({
         pool: pool as PostgresPool,
-        queueManager: new DisabledServerQueueManager('unit test'),
+        queueManager: new DisabledServerBetaQueueManager('unit test'),
       }) as unknown as {
         resolveMemorySessionLink(input: {
           serverSessionId: string | null;

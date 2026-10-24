@@ -3,15 +3,16 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import pg from 'pg';
 import {
-  bootstrapServerPostgresSchema,
+  bootstrapServerBetaPostgresSchema,
   createPostgresStorageRepositories,
   type PostgresPoolClient,
   type PostgresStorageRepositories,
 } from '../../../src/storage/postgres/index.js';
 import { reclaimStaleProcessingJobs } from '../../../src/server/generation/reclaimStaleProcessingJobs.js';
-import { ActiveServerGenerationWorkerManager } from '../../../src/server/runtime/ActiveServerGenerationWorkerManager.js';
+import {
+  ActiveServerBetaGenerationWorkerManager as ActiveServerGenerationWorkerManager,
+} from '../../../src/server/runtime/ActiveServerBetaGenerationWorkerManager.js';
 import { logger } from '../../../src/utils/logger.js';
-import { quoteIdentifier } from '../../sdk/pg-isolation.js';
 
 // A worker that dies mid-job leaves its outbox row in `processing`. These
 // tests hold that state open (a backdated lock) and check the sweep returns
@@ -20,6 +21,10 @@ import { quoteIdentifier } from '../../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 const STALE_AFTER_MS = 15 * 60 * 1000;
+
+function quoteIdentifier(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
+}
 
 describe('reclaimStaleProcessingJobs', () => {
   if (!testDatabaseUrl) {
@@ -53,7 +58,7 @@ describe('reclaimStaleProcessingJobs', () => {
     schemaName = `cm_reclaim_${crypto.randomUUID().replaceAll('-', '_')}`;
     await client.query(`CREATE SCHEMA ${quoteIdentifier(schemaName)}`);
     await client.query(`SET search_path TO ${quoteIdentifier(schemaName)}`);
-    await bootstrapServerPostgresSchema(client);
+    await bootstrapServerBetaPostgresSchema(client);
     storage = createPostgresStorageRepositories(client);
     const team = await storage.teams.create({ name: 'team-a' });
     const project = await storage.projects.create({ teamId: team.id, name: 'p1' });
