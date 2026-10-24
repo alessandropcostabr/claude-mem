@@ -326,6 +326,13 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
     expect(parsed.mcpServers['mcp-search'].args[1]).toBe(MCP_EXPECTED);
   });
 
+  it('recovers an NVM Node binary when the Codex host PATH is stale', () => {
+    expect(codexHook(['start'])).toContain('if ! command -v node');
+    expect(codexHook(['start'])).toContain('$HOME/.nvm/versions/node/v$_NV/bin');
+    expect(MCP_EXPECTED).toContain('if ! command -v node');
+    expect(MCP_EXPECTED).toContain('$HOME/.nvm/versions/node/v$_NV/bin');
+  });
+
   it('never leaks a raw ${CLAUDE_PLUGIN_ROOT} into the resolved trailing command', () => {
     // The placeholder may appear only inside the _E="${CLAUDE_PLUGIN_ROOT:-...}"
     // expansion, never as a bare `${CLAUDE_PLUGIN_ROOT}` token that would reach

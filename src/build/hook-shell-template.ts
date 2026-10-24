@@ -62,10 +62,16 @@ const CLAUDE_CODE_SETUP_PATH_PRELUDE =
   'export PATH="$HOME/.nvm/versions/node/v$(ls \\"$HOME/.nvm/versions/node\\" 2>/dev/null | ' +
   "sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\";";
 
+const NVM_NODE_PATH_RECOVERY =
+  `if ! command -v node >/dev/null 2>&1; then ` +
+  `_NV=$(ls "$HOME/.nvm/versions/node" 2>/dev/null | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1); ` +
+  `[ -n "$_NV" ] && export PATH="$HOME/.nvm/versions/node/v$_NV/bin:$PATH"; fi;`;
+
 const CODEX_CLI_PATH_PRELUDE =
   `_HP=$(printenv PATH 2>/dev/null || true); ` +
   `if [ -z "$_HP" ] && [ -n "\${SHELL:-}" ]; then _HP=$("$SHELL" -lc 'printf %s "$PATH"' 2>/dev/null || true); fi; ` +
-  `_HP=$(printf '%s' "$_HP" | tr ' ' ':'); export PATH="\${_HP:+$_HP:}$PATH"; `;
+  `_HP=$(printf '%s' "$_HP" | tr ' ' ':'); export PATH="\${_HP:+$_HP:}$PATH"; ` +
+  `${NVM_NODE_PATH_RECOVERY} `;
 
 function pathPrelude(host: ShellTemplateHost): string {
   switch (host) {
@@ -78,7 +84,7 @@ function pathPrelude(host: ShellTemplateHost): string {
       // before `_C=`, matching the hand-authored codex-hooks.json.
       return CODEX_CLI_PATH_PRELUDE;
     case 'mcp':
-      return '';
+      return NVM_NODE_PATH_RECOVERY;
   }
 }
 
