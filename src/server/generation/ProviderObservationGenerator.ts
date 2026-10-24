@@ -16,7 +16,7 @@ import {
   type ServerGenerationJobPayload,
 } from '../jobs/types.js';
 import { ServerClassifiedProviderError } from './providers/shared/error-classification.js';
-import type { ServerGenerationProvider } from './providers/shared/types.js';
+import type { ServerGenerationProvider, ServerGenerationResult } from './providers/shared/types.js';
 import {
   markGenerationFailed,
   processGeneratedResponse,
@@ -58,8 +58,11 @@ export interface ProviderObservationGeneratorOptions {
   pool: PostgresPool;
   provider: ServerGenerationProvider;
   workerId?: string;
+  providerTimeoutMs?: number;
 }
 
+// Upper bound for one provider call and floor for stale-lock recovery.
+export const DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS = 600_000;
 
 // The `limit` on listUnprocessedEvents caps the event COUNT, not the payload
 // volume, and event size varies by orders of magnitude. Long sessions therefore
@@ -269,16 +272,29 @@ export class ProviderObservationGenerator {
       const events = await this.loadEvents(fresh, payload);
       const project = await this.loadProject(fresh);
 
-      const result = await this.options.provider.generate({
-        job: fresh,
-        events,
-        project: {
-          projectId: fresh.projectId,
-          teamId: fresh.teamId,
-          serverSessionId: fresh.serverSessionId,
-          projectName: project?.name ?? null,
-        },
-      });
+      const timeoutMs = this.options.providerTimeoutMs ?? DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS;
+      const signal = AbortSignal.timeout(timeoutMs);
+      let result: ServerGenerationResult;
+      try {
+        result = await this.options.provider.generate({
+          job: fresh,
+          events,
+          project: {
+            projectId: fresh.projectId,
+            teamId: fresh.teamId,
+            serverSessionId: fresh.serverSessionId,
+            projectName: project?.name ?? null,
+          },
+        }, signal);
+      } catch (error) {
+        if (signal.aborted) {
+          throw new ServerClassifiedProviderError(
+            `${this.options.provider.providerLabel} request timed out after ${timeoutMs}ms`,
+            { kind: 'transient', cause: error },
+          );
+        }
+        throw error;
+      }
 
       const persistInput = {
         pool: this.options.pool,
@@ -532,8 +548,8 @@ export class ProviderObservationGenerator {
       // workers to issue the (paid, rate-limited) external provider call,
       // and the persistence-level terminal-status guard only collapses the
       // duplicate after the call has already happened. Skip instead. If the
-      // first worker truly died, `reconcileOnStartup` (and the next BullMQ
-      // retry) will resurrect the row.
+      // first worker truly died, the stale-lock sweep
+      // (reclaimStaleProcessingJobs) returns the row to the queue.
       logger.info('SYSTEM', 'generation job already in processing; skipping duplicate worker run', {
         jobId: current.id,
         lockedBy: current.lockedBy,
