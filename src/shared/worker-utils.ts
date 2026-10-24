@@ -4,7 +4,7 @@ import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
-import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
+import { MARKETPLACE_ROOT, DATA_DIR, getPackageRoot } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
 import { emitBlockingError } from "./hook-io.js";
@@ -136,16 +136,18 @@ async function isWorkerReady(): Promise<boolean> {
 }
 
 /**
- * Canonical worker-script resolver: the marketplace install first, then the
- * dev-tree copy under cwd. Exported so other launchers (e.g. the MCP server)
- * prefer the same marketplace copy instead of spawning a stale cache-dir
- * bundle.
+ * Canonical worker-script resolver: the active host plugin first, then the
+ * legacy marketplace and dev-tree fallbacks.
  */
-export function resolveWorkerScriptPath(): string | null {
+export function resolveWorkerScriptPath(
+  hostPluginRoot = process.env.CLAUDE_PLUGIN_ROOT || process.env.PLUGIN_ROOT
+): string | null {
   const candidates = [
+    hostPluginRoot && path.join(hostPluginRoot, 'scripts', 'worker-service.cjs'),
+    path.join(getPackageRoot(), 'scripts', 'worker-service.cjs'),
     path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
     path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
-  ];
+  ].filter(Boolean) as string[];
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
   }

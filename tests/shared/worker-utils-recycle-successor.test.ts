@@ -99,6 +99,12 @@ describe('ensureWorkerRunning — recycle waits for the dying worker\'s successo
     spawnCalls.length = 0;
   });
 
+  it('resolves the worker from the active host plugin root first', async () => {
+    const { resolveWorkerScriptPath } = await importWorkerUtilsFresh();
+    const pluginRoot = join(process.cwd(), 'plugin');
+    expect(resolveWorkerScriptPath(pluginRoot)).toBe(join(pluginRoot, 'scripts', 'worker-service.cjs'));
+  });
+
   afterEach(() => {
     global.fetch = originalFetch;
     if (originalReadinessBudget === undefined) {
