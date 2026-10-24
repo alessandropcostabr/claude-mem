@@ -1,7 +1,8 @@
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
+import { writeJsonFileAtomic } from '../npx-cli/utils/paths.js';
 
 export interface SettingsDefaults {
   CLAUDE_MEM_SELF_AUTHOR_ENABLED: string;
@@ -213,7 +214,7 @@ export class SettingsDefaultsManager {
           if (!existsSync(dir)) {
             mkdirSync(dir, { recursive: true });
           }
-          writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+          writeJsonFileAtomic(settingsPath, defaults, { mode: 0o600 });
           // stderr, never stdout: this fires on the first boot in a fresh data
           // dir, and CLI commands like `start` promise machine-readable JSON
           // on stdout to the hook framework.
@@ -232,7 +233,7 @@ export class SettingsDefaultsManager {
         flatSettings = settings.env;
 
         try {
-          writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
+          writeJsonFileAtomic(settingsPath, flatSettings, { mode: 0o600 });
           // stderr, never stdout — same JSON-on-stdout contract as above.
           console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
         } catch (error: unknown) {

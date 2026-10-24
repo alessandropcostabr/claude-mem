@@ -13,6 +13,7 @@
 
 import { fetchWithTimeout } from '../../shared/worker-utils.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
+import { stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
 
 const DEFAULT_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.API_REQUEST);
 
@@ -394,7 +395,7 @@ export class ServerBetaClient {
       },
     };
     if (body !== undefined) {
-      init.body = JSON.stringify(body);
+      init.body = JSON.stringify(stripMemoryTagsFromJsonStrings(body));
     }
 
     let response: Response;
