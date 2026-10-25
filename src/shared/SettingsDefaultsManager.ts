@@ -1,11 +1,16 @@
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
+import { writeJsonFileAtomic } from '../npx-cli/utils/paths.js';
 
 export interface SettingsDefaults {
   CLAUDE_MEM_SELF_AUTHOR_ENABLED: string;
   CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: string;
+  CLAUDE_MEM_SELF_AUTHOR_REALTIME: string;
+  CLAUDE_MEM_SELF_AUTHOR_COOLDOWN_PROMPTS: string;
+  CLAUDE_MEM_SELF_AUTHOR_MAX_OBS_PER_CHECKPOINT: string;
+  CLAUDE_MEM_SELF_AUTHOR_FALLBACK_DELAY_MS: string;
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
   CLAUDE_MEM_WORKER_PORT: string;
@@ -89,6 +94,10 @@ export class SettingsDefaultsManager {
   private static readonly DEFAULTS: SettingsDefaults = {
     CLAUDE_MEM_SELF_AUTHOR_ENABLED: 'false',  // Opt-in: session writes its own observations at Stop
     CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: '4',     // Substantive tool uses before asking to self-author
+    CLAUDE_MEM_SELF_AUTHOR_REALTIME: 'false',  // Opt-in: Checkpoint Rider (real-time self-author via UserPromptSubmit)
+    CLAUDE_MEM_SELF_AUTHOR_COOLDOWN_PROMPTS: '2',        // Min prompts between checkpoint riders
+    CLAUDE_MEM_SELF_AUTHOR_MAX_OBS_PER_CHECKPOINT: '3',  // Max observations asked per checkpoint
+    CLAUDE_MEM_SELF_AUTHOR_FALLBACK_DELAY_MS: '900000',  // Loop-A fallback delay (15 min)
     CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
@@ -196,7 +205,7 @@ export class SettingsDefaultsManager {
     return result;
   }
 
-  static loadFromFile(settingsPath: string): SettingsDefaults {
+  static loadFromFile(settingsPath: string, applyEnvOverrides = true): SettingsDefaults {
     try {
       if (!existsSync(settingsPath)) {
         const defaults = this.getAllDefaults();
@@ -205,12 +214,15 @@ export class SettingsDefaultsManager {
           if (!existsSync(dir)) {
             mkdirSync(dir, { recursive: true });
           }
-          writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
-          console.log('[SETTINGS] Created settings file with defaults:', settingsPath);
+          writeJsonFileAtomic(settingsPath, defaults, { mode: 0o600 });
+          // stderr, never stdout: this fires on the first boot in a fresh data
+          // dir, and CLI commands like `start` promise machine-readable JSON
+          // on stdout to the hook framework.
+          console.warn('[SETTINGS] Created settings file with defaults:', settingsPath);
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
         }
-        return this.applyEnvOverrides(defaults);
+        return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
@@ -221,8 +233,9 @@ export class SettingsDefaultsManager {
         flatSettings = settings.env;
 
         try {
-          writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
-          console.log('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
+          writeJsonFileAtomic(settingsPath, flatSettings, { mode: 0o600 });
+          // stderr, never stdout — same JSON-on-stdout contract as above.
+          console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
           // Continue with in-memory migration even if write fails
@@ -236,10 +249,11 @@ export class SettingsDefaultsManager {
         }
       }
 
-      return this.applyEnvOverrides(result);
+      return applyEnvOverrides ? this.applyEnvOverrides(result) : result;
     } catch (error: unknown) {
       console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
-      return this.applyEnvOverrides(this.getAllDefaults());
+      const defaults = this.getAllDefaults();
+      return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
     }
   }
 }

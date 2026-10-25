@@ -2,7 +2,7 @@
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import path from 'path';
-import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, renameSync, mkdirSync } from 'fs';
 import { getPackageRoot, paths } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
@@ -13,6 +13,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { flushResponseThen } from '../../../server/flushResponseThen.js';
+import { writeJsonFileAtomic } from '../../../../npx-cli/utils/paths.js';
 
 const updateSettingsSchema = z.object({}).passthrough();
 
@@ -123,7 +124,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+    writeJsonFileAtomic(settingsPath, settings, { mode: 0o600 });
 
     clearPortCache();
 
@@ -351,7 +352,7 @@ export class SettingsRoutes extends BaseRouteHandler {
         mkdirSync(dir, { recursive: true });
       }
 
-      writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+      writeJsonFileAtomic(settingsPath, defaults, { mode: 0o600 });
       logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
     }
   }

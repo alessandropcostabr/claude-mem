@@ -17,7 +17,8 @@
  * The fallback chain ORDER is contractual and must not change:
  *   1. ${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}   (host-injected env)
  *   2. (mcp only) $PWD/plugin, $PWD               (repo/dev checkout)
- *   3. cache directories (newest first via `ls -dt`)
+ *   3. cache directories (highest stable semantic version first for MCP;
+ *      newest first for hook launchers)
  *   4. $_C/plugins/marketplaces/thedotmack/plugin (marketplace install)
  */
 
@@ -62,10 +63,16 @@ const CLAUDE_CODE_SETUP_PATH_PRELUDE =
   'export PATH="$HOME/.nvm/versions/node/v$(ls \\"$HOME/.nvm/versions/node\\" 2>/dev/null | ' +
   "sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\";";
 
+const NVM_NODE_PATH_RECOVERY =
+  `if ! command -v node >/dev/null 2>&1; then ` +
+  `_NV=$(ls "$HOME/.nvm/versions/node" 2>/dev/null | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1); ` +
+  `[ -n "$_NV" ] && export PATH="$HOME/.nvm/versions/node/v$_NV/bin:$PATH"; fi;`;
+
 const CODEX_CLI_PATH_PRELUDE =
   `_HP=$(printenv PATH 2>/dev/null || true); ` +
   `if [ -z "$_HP" ] && [ -n "\${SHELL:-}" ]; then _HP=$("$SHELL" -lc 'printf %s "$PATH"' 2>/dev/null || true); fi; ` +
-  `_HP=$(printf '%s' "$_HP" | tr ' ' ':'); export PATH="\${_HP:+$_HP:}$PATH"; `;
+  `_HP=$(printf '%s' "$_HP" | tr ' ' ':'); export PATH="\${_HP:+$_HP:}$PATH"; ` +
+  `${NVM_NODE_PATH_RECOVERY} `;
 
 function pathPrelude(host: ShellTemplateHost): string {
   switch (host) {
@@ -78,7 +85,7 @@ function pathPrelude(host: ShellTemplateHost): string {
       // before `_C=`, matching the hand-authored codex-hooks.json.
       return CODEX_CLI_PATH_PRELUDE;
     case 'mcp':
-      return '';
+      return NVM_NODE_PATH_RECOVERY;
   }
 }
 
@@ -106,10 +113,24 @@ function candidateBlock(options: ShellTemplateOptions): string {
   }
 
   const extraCacheRoots = isMcp && options.mcpExtraCacheRoots ? options.mcpExtraCacheRoots : [];
-  const allGlobs = [...extraCacheRoots, '$_C/plugins/cache/thedotmack/claude-mem']
-    .map((root) => `"${root}"/[0-9]*/`)
-    .join(' ');
-  lines.push(`ls -dt ${allGlobs} 2>/dev/null;`);
+  const cacheRoots = [...extraCacheRoots, '$_C/plugins/cache/thedotmack/claude-mem'];
+  if (isMcp) {
+    // A rollback cache can be copied after the active version, so mtime is not
+    // a reliable version selector. Keep cache-root priority, but enumerate each
+    // root by strict x.y.z semantic version without relying on GNU sort -V
+    // (unavailable on stock macOS).
+    for (const root of cacheRoots) {
+      lines.push(
+        `for _D in "${root}"/*; do [ -d "$_D" ] || continue; _V=\${_D##*/}; ` +
+        `printf '%s\\n' "$_V" | grep -Eq '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$' || continue; ` +
+        `printf '%s\\t%s\\n' "$_V" "$_D"; done 2>/dev/null | ` +
+        `LC_ALL=C sort -t. -k1,1nr -k2,2nr -k3,3nr | cut -f2-;`
+      );
+    }
+  } else {
+    const allGlobs = cacheRoots.map((root) => `"${root}"/[0-9]*/`).join(' ');
+    lines.push(`ls -dt ${allGlobs} 2>/dev/null;`);
+  }
   lines.push(`printf '%s\\n' "$_C/plugins/marketplaces/thedotmack/plugin";`);
 
   // The MCP loop trims a trailing slash inline; the hook loop trims via _R="${_R%/}".

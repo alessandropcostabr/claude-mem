@@ -14,7 +14,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getWorkerPort, workerHttpRequest } from '../shared/worker-utils.js';
+import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
@@ -49,7 +49,12 @@ const mcpServerDir = (() => {
     return process.cwd();
   }
 })();
-const WORKER_SCRIPT_PATH = resolve(mcpServerDir, 'worker-service.cjs');
+// Prefer the canonical marketplace copy of the worker bundle (same
+// marketplace-first candidates as the hook launcher) over this server's own
+// directory: an MCP server still running out of a stale plugin cache dir
+// would otherwise auto-spawn a stale worker. The own-dir resolution stays as
+// the fallback for installs without a marketplace copy.
+const WORKER_SCRIPT_PATH = resolveWorkerScriptPath() ?? resolve(mcpServerDir, 'worker-service.cjs');
 
 function errorIfWorkerScriptMissing(): void {
   if (!mcpServerDirResolutionFailed) return;
@@ -270,6 +275,20 @@ function formatJsonResult(payload: unknown): { content: Array<{ type: 'text'; te
   };
 }
 
+function rejectLegacyReadToolInServerBeta(
+  toolName: 'search' | 'timeline' | 'get_observations',
+): { content: Array<{ type: 'text'; text: string }>; isError: true } | null {
+  if (!resolveServerBetaToolContext()) return null;
+  return {
+    content: [{
+      type: 'text' as const,
+      text: `${toolName} uses the worker memory contract with numeric observation IDs. ` +
+        'In server-beta mode use observation_search (or observation_context), which returns PostgreSQL observations directly.',
+    }],
+    isError: true,
+  };
+}
+
 function requireServerBetaForObservationTool(toolName: string): ServerBetaAvailable {
   const resolution = resolveServerBetaToolContext();
   if (!resolution) {
@@ -287,6 +306,8 @@ function requireServerBetaForObservationTool(toolName: string): ServerBetaAvaila
 interface ObservationAddArgs {
   projectId?: string;
   serverSessionId?: string | null;
+  contentSessionId?: string | null;
+  platformSource?: string | null;
   kind?: string;
   content: string;
   metadata?: Record<string, unknown>;
@@ -305,6 +326,8 @@ async function handleObservationAdd(
       projectId,
       content: args.content,
       ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+      ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
+      ...(args.platformSource !== undefined ? { platformSource: args.platformSource } : {}),
       ...(args.kind !== undefined ? { kind: args.kind } : {}),
       ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
     };
@@ -462,19 +485,30 @@ async function ensureWorkerConnection(): Promise<boolean> {
 const tools = [
   {
     name: '__IMPORTANT',
-    description: `3-LAYER WORKFLOW (ALWAYS FOLLOW):
+    description: `WORKER RUNTIME 3-LAYER WORKFLOW:
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
-NEVER fetch full details without filtering first. 10x token savings.`,
+SERVER-BETA RUNTIME: use observation_search or observation_context; do not pass PostgreSQL UUIDs to the worker tools above.`,
     inputSchema: {
       type: 'object',
       properties: {}
     },
-    handler: async () => ({
-      content: [{
-        type: 'text' as const,
-        text: `# Memory Search Workflow
+    handler: async () => {
+      if (selectRuntime() === 'server-beta') {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `# Server-beta Memory Search
+
+Use \`observation_search(query="...", limit=20)\` for PostgreSQL-backed observations, or \`observation_context\` for a pre-joined context block. These results use UUIDs and already include observation content; do not pass their IDs to the worker-only \`timeline\` or \`get_observations\` tools.`,
+          }],
+        };
+      }
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `# Memory Search Workflow
 
 **3-Layer Pattern (ALWAYS follow this):**
 
@@ -491,12 +525,13 @@ NEVER fetch full details without filtering first. 10x token savings.`,
    Returns: Complete details (~500-1000 tokens/result)
 
 **Why:** 10x token savings. Never fetch full details without filtering first.`
-      }]
-    })
+        }],
+      };
+    }
   },
   {
     name: 'search',
-    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
+    description: 'Worker runtime Step 1: Search memory and return numeric IDs for timeline/get_observations. In server-beta use observation_search or observation_context. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
       properties: {
@@ -514,6 +549,11 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
+      // Keep the legacy three-step contract internally consistent: search,
+      // timeline and get_observations all use numeric SQLite IDs. Server-beta
+      // exposes its UUID-backed reads through observation_search/context.
+      const runtimeError = rejectLegacyReadToolInServerBeta('search');
+      if (runtimeError) return runtimeError;
       const endpoint = TOOL_ENDPOINT_MAP['search'];
       return await callWorkerAPI(endpoint, args);
     }
@@ -533,6 +573,8 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
+      const runtimeError = rejectLegacyReadToolInServerBeta('timeline');
+      if (runtimeError) return runtimeError;
       const endpoint = TOOL_ENDPOINT_MAP['timeline'];
       return await callWorkerAPI(endpoint, args);
     }
@@ -553,6 +595,8 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
+      const runtimeError = rejectLegacyReadToolInServerBeta('get_observations');
+      if (runtimeError) return runtimeError;
       return await callWorkerAPIPost('/api/observations/batch', args);
     }
   },
@@ -590,7 +634,8 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         files_read: { type: 'array', items: { type: 'string' }, description: 'Files read' },
         files_modified: { type: 'array', items: { type: 'string' }, description: 'Files modified' },
         project: { type: 'string', description: 'Project name' },
-        generated_by_model: { type: 'string', description: 'Model that generated this observation' }
+        generated_by_model: { type: 'string', description: 'Model that generated this observation' },
+        checkpoint_key: { type: 'string', description: 'Checkpoint Rider key (real-time self-author); makes the observation idempotent and tags it as regime C-prime' }
       },
       required: ['type', 'narrative']
     },
@@ -657,12 +702,14 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   // MCP clients keep working without rewrites. (Plan line 753.)
   {
     name: 'observation_add',
-    description: 'Insert a manual observation directly into server-beta storage. Calls /v1/memories — does NOT enqueue generation. Server-beta runtime only. Params: content (required), projectId (optional, falls back to settings), serverSessionId, kind, metadata.',
+    description: 'Insert a manual observation directly into server-beta storage. Calls /v1/memories — does NOT enqueue generation. Server-beta runtime only.',
     inputSchema: {
       type: 'object',
       properties: {
         projectId: { type: 'string', description: 'Project id (falls back to CLAUDE_MEM_SERVER_BETA_PROJECT_ID)' },
         serverSessionId: { type: 'string', description: 'Optional server_session_id to attach the observation to' },
+        contentSessionId: { type: 'string', description: 'Optional host session id for server-side linkage' },
+        platformSource: { type: 'string', description: 'Optional host platform scope, such as claude or codex' },
         kind: { type: 'string', description: 'Observation kind (default: manual)' },
         content: { type: 'string', description: 'Observation content (required)' },
         metadata: { type: 'object', description: 'Free-form metadata object', additionalProperties: true },

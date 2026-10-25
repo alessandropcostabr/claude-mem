@@ -6,6 +6,7 @@ type CodexEventName =
   | 'PreToolUse'
   | 'PermissionRequest'
   | 'PostToolUse'
+  | 'PostCompact'
   | 'SessionStart'
   | 'UserPromptSubmit'
   | 'Stop';
@@ -14,6 +15,7 @@ const EVENT_NAMES = new Set<CodexEventName>([
   'PreToolUse',
   'PermissionRequest',
   'PostToolUse',
+  'PostCompact',
   'SessionStart',
   'UserPromptSubmit',
   'Stop',
@@ -27,6 +29,13 @@ function eventName(value: unknown): CodexEventName | undefined {
 
 function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+const MAX_AGENT_FIELD_LEN = 128;
+
+function agentFieldOrUndefined(value: unknown): string | undefined {
+  const field = stringOrUndefined(value);
+  return field && field.length <= MAX_AGENT_FIELD_LEN ? field : undefined;
 }
 
 function booleanOrUndefined(value: unknown): boolean | undefined {
@@ -46,7 +55,6 @@ function cloneToolInput(toolInput: unknown): unknown {
 function buildBaseOutput(result: HookResult): Record<string, unknown> {
   const output: Record<string, unknown> = {};
   if (result.continue !== undefined) output.continue = result.continue;
-  if (result.suppressOutput !== undefined) output.suppressOutput = result.suppressOutput;
   if (result.systemMessage) output.systemMessage = result.systemMessage;
   if (result.decision === 'block') output.decision = 'block';
   if (result.reason) output.reason = result.reason;
@@ -78,7 +86,7 @@ export const codexAdapter: PlatformAdapter = {
 
     const source = r.source;
     const sessionSource =
-      source === 'startup' || source === 'resume' || source === 'clear'
+      source === 'startup' || source === 'resume' || source === 'clear' || source === 'compact'
         ? source
         : undefined;
     const sessionId = stringOrUndefined(r.session_id);
@@ -93,6 +101,9 @@ export const codexAdapter: PlatformAdapter = {
       toolName,
       toolInput,
       toolResponse: r.tool_response,
+      toolUseId: stringOrUndefined(r.tool_use_id),
+      agentId: agentFieldOrUndefined(r.agent_id),
+      agentType: agentFieldOrUndefined(r.agent_type),
       transcriptPath: stringOrUndefined(r.transcript_path),
       lastAssistantMessage: stringOrUndefined(r.last_assistant_message),
       turnId: stringOrUndefined(r.turn_id),
