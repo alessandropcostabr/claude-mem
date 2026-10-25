@@ -275,6 +275,20 @@ function formatJsonResult(payload: unknown): { content: Array<{ type: 'text'; te
   };
 }
 
+function rejectLegacyReadToolInServerBeta(
+  toolName: 'search' | 'timeline' | 'get_observations',
+): { content: Array<{ type: 'text'; text: string }>; isError: true } | null {
+  if (!resolveServerBetaToolContext()) return null;
+  return {
+    content: [{
+      type: 'text' as const,
+      text: `${toolName} uses the worker memory contract with numeric observation IDs. ` +
+        'In server-beta mode use observation_search (or observation_context), which returns PostgreSQL observations directly.',
+    }],
+    isError: true,
+  };
+}
+
 function requireServerBetaForObservationTool(toolName: string): ServerBetaAvailable {
   const resolution = resolveServerBetaToolContext();
   if (!resolution) {
@@ -471,19 +485,30 @@ async function ensureWorkerConnection(): Promise<boolean> {
 const tools = [
   {
     name: '__IMPORTANT',
-    description: `3-LAYER WORKFLOW (ALWAYS FOLLOW):
+    description: `WORKER RUNTIME 3-LAYER WORKFLOW:
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
-NEVER fetch full details without filtering first. 10x token savings.`,
+SERVER-BETA RUNTIME: use observation_search or observation_context; do not pass PostgreSQL UUIDs to the worker tools above.`,
     inputSchema: {
       type: 'object',
       properties: {}
     },
-    handler: async () => ({
-      content: [{
-        type: 'text' as const,
-        text: `# Memory Search Workflow
+    handler: async () => {
+      if (selectRuntime() === 'server-beta') {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `# Server-beta Memory Search
+
+Use \`observation_search(query="...", limit=20)\` for PostgreSQL-backed observations, or \`observation_context\` for a pre-joined context block. These results use UUIDs and already include observation content; do not pass their IDs to the worker-only \`timeline\` or \`get_observations\` tools.`,
+          }],
+        };
+      }
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `# Memory Search Workflow
 
 **3-Layer Pattern (ALWAYS follow this):**
 
@@ -500,12 +525,13 @@ NEVER fetch full details without filtering first. 10x token savings.`,
    Returns: Complete details (~500-1000 tokens/result)
 
 **Why:** 10x token savings. Never fetch full details without filtering first.`
-      }]
-    })
+        }],
+      };
+    }
   },
   {
     name: 'search',
-    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
+    description: 'Worker runtime Step 1: Search memory and return numeric IDs for timeline/get_observations. In server-beta use observation_search or observation_context. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
       properties: {
@@ -523,27 +549,11 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      // server-beta: the local worker /api/search reads the FROZEN local SQLite (and a
-      // retired Chroma) → 0 observations. Route to the PG-backed /v1/search ONLY when it
-      // can serve the request faithfully: server-beta available, a text query, observations
-      // result type, and no filter /v1/search can't honor (it takes only projectId/query/
-      // limit). Otherwise fall back to the worker, which applies platformSource/type/
-      // obs_type/date/offset/orderBy and handles prompt/session queries.
-      const sb = resolveServerBetaToolContext();
-      const hasText = typeof args?.query === 'string' && args.query.trim().length > 0;
-      const typeIsObservations = args?.type === undefined || args?.type === 'observations';
-      const hasUnsupportedFilter =
-        args?.platformSource !== undefined || args?.project !== undefined ||
-        args?.obs_type !== undefined || args?.dateStart !== undefined ||
-        args?.dateEnd !== undefined || args?.offset !== undefined || args?.orderBy !== undefined;
-      if (sb && sb.available && hasText && typeIsObservations && !hasUnsupportedFilter) {
-        const request: ServerBetaSearchObservationsRequest = {
-          projectId: sb.projectId,
-          query: args.query,
-          ...(args.limit !== undefined ? { limit: args.limit } : {}),
-        };
-        return formatJsonResult(await sb.client.searchObservations(request));
-      }
+      // Keep the legacy three-step contract internally consistent: search,
+      // timeline and get_observations all use numeric SQLite IDs. Server-beta
+      // exposes its UUID-backed reads through observation_search/context.
+      const runtimeError = rejectLegacyReadToolInServerBeta('search');
+      if (runtimeError) return runtimeError;
       const endpoint = TOOL_ENDPOINT_MAP['search'];
       return await callWorkerAPI(endpoint, args);
     }
@@ -563,6 +573,8 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
+      const runtimeError = rejectLegacyReadToolInServerBeta('timeline');
+      if (runtimeError) return runtimeError;
       const endpoint = TOOL_ENDPOINT_MAP['timeline'];
       return await callWorkerAPI(endpoint, args);
     }
@@ -583,6 +595,8 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
+      const runtimeError = rejectLegacyReadToolInServerBeta('get_observations');
+      if (runtimeError) return runtimeError;
       return await callWorkerAPIPost('/api/observations/batch', args);
     }
   },

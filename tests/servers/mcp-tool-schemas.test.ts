@@ -5,6 +5,15 @@ const mcpServerPath = new URL('../../src/servers/mcp-server.ts', import.meta.url
 describe('MCP tool inputSchema declarations', () => {
   let tools: any[];
 
+  it('advertises separate worker and server-beta read workflows', async () => {
+    const src = await Bun.file(mcpServerPath).text();
+    const importantSection = src.slice(src.indexOf("name: '__IMPORTANT'"), src.indexOf("name: 'search'"));
+
+    expect(importantSection).toContain("selectRuntime() === 'server-beta'");
+    expect(importantSection).toContain('observation_search');
+    expect(importantSection).toContain('do not pass');
+  });
+
   it('search tool declares query parameter', async () => {
     const src = await Bun.file(mcpServerPath).text();
 
@@ -15,6 +24,8 @@ describe('MCP tool inputSchema declarations', () => {
     expect(searchSection).toContain("project:");
     expect(searchSection).toContain("orderBy:");
     expect(searchSection).not.toContain("properties: {}");
+    expect(searchSection).toContain("rejectLegacyReadToolInServerBeta('search')");
+    expect(searchSection).not.toContain('searchObservations(');
   });
 
   it('timeline tool declares anchor and query parameters', async () => {
@@ -30,6 +41,7 @@ describe('MCP tool inputSchema declarations', () => {
     expect(timelineSection).toContain("depth_after:");
     expect(timelineSection).toContain("project:");
     expect(timelineSection).not.toContain("properties: {}");
+    expect(timelineSection).toContain("rejectLegacyReadToolInServerBeta('timeline')");
   });
 
   it('get_observations still declares ids (regression check)', async () => {
@@ -38,6 +50,7 @@ describe('MCP tool inputSchema declarations', () => {
     const getObsSection = src.slice(src.indexOf("name: 'get_observations'"));
     expect(getObsSection).toContain("ids:");
     expect(getObsSection).toContain("required:");
+    expect(getObsSection).toContain("rejectLegacyReadToolInServerBeta('get_observations')");
   });
 
   // Phase 8 — observation_* tools backed by server-beta REST core.

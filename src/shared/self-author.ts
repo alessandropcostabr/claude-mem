@@ -4,7 +4,20 @@
  * holds the pure decision logic (no IO) so it is fully unit-testable.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } from 'fs';
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'fs';
+import { createHash, randomUUID } from 'crypto';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -150,9 +163,9 @@ export interface SelfAuthorInput {
   /** Minimum substantive activity before asking the session to self-author. */
   threshold: number;
   /**
-   * Real-time self-author (Checkpoint Rider) is active. When true, the rider
-   * already self-authors mid-session transparently, so the Stop must NOT block
-   * (no "Stop hook error"); the session tail is still captured by the pipeline.
+   * A real-time Checkpoint Rider was emitted for this exact Stop interval.
+   * When true, the Stop must NOT block (no "Stop hook error"); a configured
+   * realtime mode without an emitted marker remains eligible for fallback.
    */
   realtimeEnabled?: boolean;
 }
@@ -165,7 +178,7 @@ export interface SelfAuthorDecision {
  * Decide whether this Stop should block and ask the running session to write
  * its own observations. Gated by an activity threshold (not per-stop) and the
  * Stop re-entry flag (so the self-authoring turn itself stops cleanly). When the
- * real-time rider is on, the Stop stays transparent (non-blocking).
+ * rider was emitted for this interval, the Stop stays transparent.
  */
 export function decideSelfAuthor(input: SelfAuthorInput): SelfAuthorDecision {
   if (!input.enabled) return { block: false };
@@ -419,15 +432,101 @@ function counterFile(sessionId: string, dir: string): string {
   return join(dir, `${sanitize(sessionId)}.count`);
 }
 
+function counterAckFile(sessionId: string, dir: string): string {
+  return `${counterFile(sessionId, dir)}.ack`;
+}
+
+const COUNTER_ACK_LOCK_STALE_MS = 30_000;
+
+interface CounterAckLock {
+  path: string;
+  owner: string;
+}
+
+/**
+ * Read the monotonically acknowledged line offset. Missing state is the legacy
+ * format (offset zero); malformed state is fail-open and returns null so callers
+ * count every event rather than silently hiding activity.
+ */
+function readCounterAckOffset(sessionId: string, dir: string): number | null {
+  const file = counterAckFile(sessionId, dir);
+  if (!existsSync(file)) return 0;
+  try {
+    const raw = readFileSync(file, 'utf8').trim();
+    if (!/^\d+$/.test(raw)) return null;
+    const offset = Number(raw);
+    return Number.isSafeInteger(offset) && offset >= 0 ? offset : null;
+  } catch {
+    return null;
+  }
+}
+
+function countSubstantiveLogLines(file: string): number {
+  if (!existsSync(file)) return 0;
+  try {
+    return readFileSync(file, 'utf8').split('\n').filter(Boolean).length;
+  } catch {
+    return 0;
+  }
+}
+
+function acquireCounterAckLock(sessionId: string, dir: string): CounterAckLock | null {
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = `${counterAckFile(sessionId, dir)}.lock`;
+  const owner = `${process.pid}:${randomUUID()}`;
+  const create = (): CounterAckLock | null => {
+    try {
+      writeFileSync(path, owner, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      return { path, owner };
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return null;
+      throw error;
+    }
+  };
+
+  const acquired = create();
+  if (acquired) return acquired;
+
+  try {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || !stat.isFile()) return null;
+    if (Date.now() - stat.mtimeMs <= COUNTER_ACK_LOCK_STALE_MS) return null;
+    const staleClaim = `${path}.${process.pid}.${randomUUID()}.stale`;
+    renameSync(path, staleClaim);
+    try { unlinkSync(staleClaim); } catch { /* best-effort stale cleanup */ }
+  } catch {
+    return null;
+  }
+  return create();
+}
+
+function releaseCounterAckLock(lock: CounterAckLock): void {
+  try {
+    if (readFileSync(lock.path, 'utf8') === lock.owner) unlinkSync(lock.path);
+  } catch {
+    // A stale lock is recovered by the next acknowledge attempt.
+  }
+}
+
 export function getSubstantiveCount(sessionId: string, dir: string): number {
   const file = counterFile(sessionId, dir);
-  if (!existsSync(file)) return 0;
-  // One non-empty line per event (append-only) — count the lines.
-  return readFileSync(file, 'utf8').split('\n').filter(Boolean).length;
+  const total = countSubstantiveLogLines(file);
+  const acknowledged = readCounterAckOffset(sessionId, dir);
+  // Corrupt acknowledgement state is fail-open: expose the entire monotonic
+  // log so Stop may request a duplicate checkpoint instead of losing work.
+  if (acknowledged === null) return total;
+  if (acknowledged > total) {
+    // A reset interrupted between removing the log and its offset can leave an
+    // impossible but syntactically valid value. Forget it permanently; merely
+    // ignoring it for this read could hide future events once the log regrows.
+    try { unlinkSync(counterAckFile(sessionId, dir)); } catch { /* duplicate counting is safer */ }
+    return total;
+  }
+  return total - acknowledged;
 }
 
 export function recordSubstantiveEvent(sessionId: string, dir: string): void {
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   // Append a marker line rather than read-modify-write: appends are atomic for
   // small writes, so concurrent hook processes can't clobber each other's count.
   appendFileSync(counterFile(sessionId, dir), '1\n');
@@ -436,6 +535,60 @@ export function recordSubstantiveEvent(sessionId: string, dir: string): void {
 export function resetSubstantiveCount(sessionId: string, dir: string): void {
   const file = counterFile(sessionId, dir);
   if (existsSync(file)) rmSync(file, { force: true });
+  const ack = counterAckFile(sessionId, dir);
+  if (existsSync(ack)) rmSync(ack, { force: true });
+  const ackTemp = `${ack}.tmp`;
+  if (existsSync(ackTemp)) rmSync(ackTemp, { force: true });
+}
+
+/**
+ * Acknowledge only the activity covered by an emitted checkpoint rider while
+ * preserving events appended after that rider. The event log itself remains
+ * append-only. A separate monotonic offset is replaced atomically, so writers
+ * that already hold the log fd cannot race with a rename/unlink of that log.
+ *
+ * Any failure is fail-open: the prior offset and the complete event log remain
+ * readable, so a later Stop may ask for a duplicate checkpoint rather than
+ * silently lose work.
+ */
+export function acknowledgeSubstantiveBaseline(
+  sessionId: string,
+  dir: string,
+  baseline: number,
+): boolean {
+  if (!Number.isSafeInteger(baseline) || baseline < 0) return false;
+  if (baseline === 0) return true;
+
+  let lock: CounterAckLock | null;
+  try {
+    lock = acquireCounterAckLock(sessionId, dir);
+  } catch {
+    return false;
+  }
+  if (!lock) return false;
+
+  const ack = counterAckFile(sessionId, dir);
+  // The per-session lock makes a fixed temp name safe. If a process dies after
+  // writing it, the next lock owner can discard it while the canonical offset
+  // remains either wholly old or wholly new.
+  const temp = `${ack}.tmp`;
+  try {
+    const previous = readCounterAckOffset(sessionId, dir);
+    if (previous === null) return false;
+    const total = countSubstantiveLogLines(counterFile(sessionId, dir));
+    if (total - previous < baseline) return false;
+    const next = previous + baseline;
+    try { if (existsSync(temp)) unlinkSync(temp); } catch { return false; }
+    writeFileSync(temp, `${next}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    renameSync(temp, ack);
+    chmodSync(ack, 0o600);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try { if (existsSync(temp)) unlinkSync(temp); } catch { /* stale temp is harmless */ }
+    releaseCounterAckLock(lock);
+  }
 }
 
 // --- Checkpoint sidecar state (per session) --------------------------------
@@ -463,4 +616,200 @@ export function readCheckpointState(sessionId: string, dir: string): CheckpointS
 export function writeCheckpointState(sessionId: string, dir: string, state: CheckpointState): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(stateFile(sessionId, dir), JSON.stringify(state));
+}
+
+// --- Emitted rider marker (per session/turn) ------------------------------
+// UserPromptSubmit and Stop execute in separate processes. A realtime setting
+// alone therefore cannot prove that the model actually received a checkpoint
+// rider. Record that fact only on the return path which carries the rider, then
+// atomically consume it at the next Stop. This keeps Stop self-authoring as the
+// fallback when session-init failed or no rider fired for this interval.
+
+const RIDER_MARKER_TTL_MS = 24 * 60 * 60 * 1000;
+const RIDER_MARKER_MAX_ENTRIES = 256;
+const RIDER_MARKER_LOCK_STALE_MS = 30_000;
+const RIDER_MARKER_LOCK_NAME = '.rider-marker.lock';
+
+interface RiderMarkerLock {
+  path: string;
+  owner: string;
+}
+
+function riderMarkerDirectory(stateDir: string): string {
+  return join(stateDir, 'rider-emitted');
+}
+
+function riderMarkerName(sessionId: string): string {
+  // Session ids can contain path separators or other user-controlled bytes.
+  // A fixed digest prevents traversal and avoids exposing the raw id on disk.
+  return `${createHash('sha256').update(sessionId).digest('hex')}.marker`;
+}
+
+function prepareRiderMarkerDirectory(stateDir: string, create: boolean): string | null {
+  const dir = riderMarkerDirectory(stateDir);
+  if (!existsSync(dir)) {
+    if (!create) return null;
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+  }
+  const stat = lstatSync(dir);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error(`Unsafe checkpoint rider marker directory: ${dir}`);
+  }
+  chmodSync(dir, 0o700);
+  return dir;
+}
+
+function isRiderMarkerArtifact(name: string): boolean {
+  return name.endsWith('.marker') || name.endsWith('.claim') || name.endsWith('.tmp');
+}
+
+function maintainRiderMarkers(dir: string): number {
+  const now = Date.now();
+  const entries = readdirSync(dir).filter(isRiderMarkerArtifact);
+  // The directory is private and writers refuse to grow past this bound. The
+  // +1 lets a caller detect a pre-existing over-cap directory without walking
+  // an attacker-controlled number of files.
+  for (const name of entries.slice(0, RIDER_MARKER_MAX_ENTRIES + 1)) {
+    const file = join(dir, name);
+    try {
+      const stat = lstatSync(file);
+      if (stat.isSymbolicLink() || !stat.isFile() || now - stat.mtimeMs > RIDER_MARKER_TTL_MS) {
+        unlinkSync(file);
+      }
+    } catch {
+      // A concurrent Stop may have consumed the marker between readdir/lstat.
+    }
+  }
+  return readdirSync(dir).filter(isRiderMarkerArtifact).length;
+}
+
+/**
+ * Try once to take the cross-process marker-directory lock. Contention fails
+ * open immediately: the caller leaves the substantive counter intact so Stop
+ * can still self-author instead of delaying the UserPromptSubmit hook.
+ */
+function acquireRiderMarkerLock(dir: string): RiderMarkerLock | null {
+  const path = join(dir, RIDER_MARKER_LOCK_NAME);
+  const owner = `${process.pid}:${randomUUID()}`;
+  const create = (): RiderMarkerLock | null => {
+    try {
+      writeFileSync(path, owner, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      return { path, owner };
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return null;
+      throw error;
+    }
+  };
+
+  const acquired = create();
+  if (acquired) return acquired;
+
+  // Recover an interrupted writer once. Rename is the atomic stale-lock claim:
+  // only one breaker can move the old lock, and no breaker ever unlinks a
+  // freshly acquired replacement at the canonical path.
+  try {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || !stat.isFile()) return null;
+    if (Date.now() - stat.mtimeMs <= RIDER_MARKER_LOCK_STALE_MS) return null;
+    const staleClaim = join(dir, `.${process.pid}.${randomUUID()}.claim`);
+    renameSync(path, staleClaim);
+    try { unlinkSync(staleClaim); } catch { /* marker maintenance reclaims it */ }
+  } catch {
+    return null;
+  }
+  return create();
+}
+
+function releaseRiderMarkerLock(lock: RiderMarkerLock): void {
+  try {
+    if (readFileSync(lock.path, 'utf8') === lock.owner) unlinkSync(lock.path);
+  } catch {
+    // A failed release is fail-open; the stale-lock path self-heals it.
+  }
+}
+
+interface CheckpointRiderMarkerV1 {
+  version: 1;
+  baseline: number;
+}
+
+function parseCheckpointRiderMarker(raw: string): CheckpointRiderMarkerV1 | null {
+  try {
+    const parsed = JSON.parse(raw) as Partial<CheckpointRiderMarkerV1>;
+    if (parsed.version !== 1) return null;
+    if (!Number.isSafeInteger(parsed.baseline) || (parsed.baseline ?? -1) < 0) return null;
+    return { version: 1, baseline: parsed.baseline! };
+  } catch {
+    // Legacy/corrupt markers cannot prove which activity the rider covered.
+    return null;
+  }
+}
+
+/** Mark that a checkpoint rider is present in the UserPromptSubmit output. */
+export function markCheckpointRiderEmitted(
+  sessionId: string,
+  stateDir: string,
+  baseline = 0,
+): boolean {
+  if (!Number.isSafeInteger(baseline) || baseline < 0) return false;
+  const dir = prepareRiderMarkerDirectory(stateDir, true)!;
+  let lock: RiderMarkerLock | null;
+  try {
+    lock = acquireRiderMarkerLock(dir);
+  } catch {
+    return false;
+  }
+  if (!lock) return false;
+
+  try {
+    const marker = join(dir, riderMarkerName(sessionId));
+    const count = maintainRiderMarkers(dir);
+    if (existsSync(marker)) return true;
+    if (count >= RIDER_MARKER_MAX_ENTRIES) return false;
+
+    const temp = join(dir, `.${process.pid}.${randomUUID()}.tmp`);
+    try {
+      const payload: CheckpointRiderMarkerV1 = { version: 1, baseline };
+      writeFileSync(temp, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      renameSync(temp, marker);
+      chmodSync(marker, 0o600);
+      return true;
+    } finally {
+      if (existsSync(temp)) unlinkSync(temp);
+    }
+  } catch {
+    return false;
+  } finally {
+    releaseRiderMarkerLock(lock);
+  }
+}
+
+/** Atomically consume and return the baseline covered by the next Stop. */
+export function consumeCheckpointRiderBaseline(sessionId: string, stateDir: string): number | null {
+  const dir = prepareRiderMarkerDirectory(stateDir, false);
+  if (!dir) return null;
+  maintainRiderMarkers(dir);
+  const marker = join(dir, riderMarkerName(sessionId));
+  const claim = join(dir, `.${process.pid}.${randomUUID()}.claim`);
+  try {
+    renameSync(marker, claim);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  let baseline: number | null = null;
+  try {
+    baseline = parseCheckpointRiderMarker(readFileSync(claim, 'utf8'))?.baseline ?? null;
+    // A successful rename is the atomic consume. Cleanup is best-effort; stale
+    // claims are bounded and removed by maintainRiderMarkers().
+    unlinkSync(claim);
+  } catch {
+    // Already consumed even if cleanup races or the process is interrupted.
+  }
+  return baseline;
+}
+
+/** Compatibility helper for callers that only need to invalidate evidence. */
+export function consumeCheckpointRiderEmission(sessionId: string, stateDir: string): boolean {
+  return consumeCheckpointRiderBaseline(sessionId, stateDir) !== null;
 }
