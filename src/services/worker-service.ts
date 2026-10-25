@@ -108,16 +108,63 @@ import { FileReadTracking } from './sqlite/metrics/FileReadTracking.js';
 export interface StatusOutput {
   continue: true;
   suppressOutput: true;
+  status: 'ready' | 'error';
+  message?: string;
+}
+
+export interface CodexSessionStartOutput {
+  continue: true;
   systemMessage?: string;
 }
 
 export function buildStatusOutput(status: 'ready' | 'error', message?: string): StatusOutput {
-  const systemMessage = message || (status === 'error' ? 'Failed to start claude-mem worker' : undefined);
   return {
     continue: true,
     suppressOutput: true,
+    status,
+    ...(message && { message })
+  };
+}
+
+export function buildCodexSessionStartOutput(
+  status: 'ready' | 'error',
+  message?: string,
+): CodexSessionStartOutput {
+  // Codex validates SessionStart stdout against its event schema. Keep custom
+  // worker status fields and raw diagnostics internal; systemMessage gets only
+  // a fixed, actionable summary.
+  const systemMessage = status === 'error'
+    ? 'claude-mem worker failed to start. Run npx claude-mem doctor.'
+    : message
+      ? 'claude-mem worker is still warming up.'
+      : undefined;
+  return {
+    continue: true,
     ...(systemMessage && { systemMessage })
   };
+}
+
+export function shouldEnsureWorkerBeforeHook(
+  platform: string,
+  event: string,
+  configuredRuntime: 'worker' | 'server-beta',
+): boolean {
+  if (configuredRuntime === 'server-beta') return false;
+  // Codex enforces a 5 s PostToolUse wire timeout. Its worker-runtime
+  // observation path performs one bounded request and fails open instead of
+  // entering the legacy 15 s lazy-start sequence.
+  return !(platform === 'codex' && event === 'observation');
+}
+
+export async function prepareWorkerForHook(
+  platform: string,
+  event: string,
+  configuredRuntime: 'worker' | 'server-beta',
+  port: number,
+  startWorker: (workerPort: number) => Promise<WorkerStartResult> = ensureWorkerStarted,
+): Promise<WorkerStartResult | null> {
+  if (!shouldEnsureWorkerBeforeHook(platform, event, configuredRuntime)) return null;
+  return startWorker(port);
 }
 
 // WorkerShutdownReason lives in worker-shutdown.ts, the import-safe shutdown
@@ -864,7 +911,11 @@ async function main() {
   const port = getWorkerPort();
 
   function exitWithStatus(status: 'ready' | 'error', message?: string): never {
-    const output = buildStatusOutput(status, message);
+    // Keep the `start` + CLAUDE_MEM_CODEX_HOOK=1 compatibility path valid for
+    // legacy or custom integrations.
+    const output = process.env.CLAUDE_MEM_CODEX_HOOK === '1'
+      ? buildCodexSessionStartOutput(status, message)
+      : buildStatusOutput(status, message);
     console.log(JSON.stringify(output));
     process.exit(0);
   }
@@ -1110,9 +1161,9 @@ async function main() {
     case 'hook': {
       // IO discipline: this case is the entry point to the hook execution path.
       // Once hookCommand is invoked, src/shared/hook-io.ts owns all
-      // stdout/stderr/exit. The pre-hookCommand error paths below (missing args,
-      // worker failed to start) are CLI-style: console.error + exit 1 is
-      // acceptable because they occur BEFORE the buffered window opens.
+      // stdout/stderr/exit. Server-beta hooks and Codex PostToolUse must reach
+      // their bounded handlers inside the host wire timeout. Legacy worker
+      // hooks retain the established pre-start/recovery behavior.
       const platform = process.argv[3];
       const event = process.argv[4];
       if (!platform || !event) {
@@ -1122,7 +1173,8 @@ async function main() {
         process.exit(1);
       }
 
-      const workerStartResult = await ensureWorkerStarted(port);
+      const { selectRuntime } = await import('./hooks/runtime-selector.js');
+      const workerStartResult = await prepareWorkerForHook(platform, event, selectRuntime(), port);
       if (workerStartResult === 'dead') {
         logger.warn('SYSTEM', 'Worker failed to start before hook, handler will proceed gracefully');
       }

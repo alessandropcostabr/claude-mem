@@ -101,6 +101,7 @@ export const codexAdapter: PlatformAdapter = {
       toolName,
       toolInput,
       toolResponse: r.tool_response,
+      toolUseId: stringOrUndefined(r.tool_use_id),
       agentId: agentFieldOrUndefined(r.agent_id),
       agentType: agentFieldOrUndefined(r.agent_type),
       transcriptPath: stringOrUndefined(r.transcript_path),

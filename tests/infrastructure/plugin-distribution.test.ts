@@ -76,6 +76,25 @@ describe('Plugin Distribution - Required Files', () => {
   }
 });
 
+describe('Plugin Distribution - Version Consistency', () => {
+  it('keeps every published manifest on the root package version', () => {
+    const expected = readJson('package.json').version;
+    const manifests = [
+      '.claude-plugin/plugin.json',
+      '.codex-plugin/plugin.json',
+      'plugin/package.json',
+      'plugin/.claude-plugin/plugin.json',
+      'plugin/.codex-plugin/plugin.json',
+      'openclaw/openclaw.plugin.json',
+    ];
+
+    for (const manifest of manifests) {
+      expect(readJson(manifest).version).toBe(expected);
+    }
+    expect(readJson('.claude-plugin/marketplace.json').plugins[0].version).toBe(expected);
+  });
+});
+
 describe('Plugin Distribution - Codex Marketplace', () => {
   it('points Codex at the bundled plugin root', () => {
     const marketplacePath = path.join(projectRoot, '.agents/plugins/marketplace.json');
@@ -105,6 +124,24 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     expect(codexHooks.hooks.PostCompact[0].hooks[0].command)
       .toContain('hook codex post-compact');
   });
+
+  it('bounds the synchronous Codex observation hook to a short fail-open wait', () => {
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const observation = codexHooks.hooks.PostToolUse[0].hooks[0];
+
+    expect(observation.command).toContain('hook codex observation');
+    expect(observation.timeout).toBe(5);
+    expect(observation).not.toHaveProperty('async');
+  });
+
+  it('marks the raw worker start compatibility path as a Codex hook', () => {
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const workerStart = codexHooks.hooks.SessionStart[0].hooks[1];
+
+    expect(workerStart.command).toContain('CLAUDE_MEM_CODEX_HOOK=1');
+    expect(workerStart.command).toContain('worker-service.cjs\" start');
+  });
+
   it('MCP launcher can recover without plugin root environment variables', () => {
     const mcpPath = path.join(projectRoot, 'plugin/.mcp.json');
     const mcp = JSON.parse(readFileSync(mcpPath, 'utf-8'));
@@ -259,9 +296,9 @@ const claudeHook = (tail: string[], extra: Record<string, unknown> = {}) => buil
   host: 'claude-code', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
   trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', ...extra,
 });
-const codexHook = (tail: string[]) => buildShellCommand({
+const codexHook = (tail: string[], extra: Record<string, unknown> = {}) => buildShellCommand({
   host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-  trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
+  trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', ...extra,
 });
 
 const RULE_A_EXPECTATIONS: Record<string, Record<string, string>> = {
@@ -284,7 +321,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, string>> = {
       trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
       notFoundMessage: 'claude-mem: version-check.js not found',
     }),
-    'SessionStart.0.1': codexHook(['start']),
+    'SessionStart.0.1': codexHook(['start'], { extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' } }),
     'SessionStart.0.2': codexHook(['hook', 'codex', 'context']),
     'UserPromptSubmit.0.0': codexHook(['hook', 'codex', 'session-init']),
     'PreToolUse.0.0': codexHook(['hook', 'codex', 'file-context']),

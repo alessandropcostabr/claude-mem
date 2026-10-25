@@ -45,10 +45,10 @@ export class ServerBetaClientError extends Error {
       return true;
     }
     if (this.kind === 'http_error') {
-      // 5xx and 429 are transient; fall back. 4xx other than 429 is a real
-      // client bug — surface it via the worker path so it can be observed.
+      // 408/425/429 and 5xx are transient; preserve the event for replay.
+      // Other 4xx responses are permanent request errors.
       if (this.status !== null && this.status >= 500) return true;
-      if (this.status === 429) return true;
+      if (this.status !== null && [408, 425, 429].includes(this.status)) return true;
     }
     return false;
   }
@@ -57,6 +57,10 @@ export class ServerBetaClientError extends Error {
 export interface ServerBetaClientConfig {
   serverBaseUrl: string;
   apiKey: string;
+  timeoutMs?: number;
+}
+
+export interface ServerBetaRequestOptions {
   timeoutMs?: number;
 }
 
@@ -86,6 +90,9 @@ export interface ServerBetaRecordEventRequest {
   serverSessionId?: string | null;
   contentSessionId?: string | null;
   memorySessionId?: string | null;
+  /** Stable upstream event id used by the server for idempotent replay. */
+  sourceEventId?: string | null;
+  platformSource?: string | null;
   sourceType: 'hook' | 'worker' | 'provider' | 'server' | 'api';
   eventType: string;
   payload?: unknown;
@@ -231,10 +238,13 @@ export class ServerBetaClient {
     return this.request<ServerBetaStartSessionResponse>('POST', '/v1/sessions/start', body);
   }
 
-  async recordEvent(input: ServerBetaRecordEventRequest): Promise<ServerBetaRecordEventResponse> {
+  async recordEvent(
+    input: ServerBetaRecordEventRequest,
+    options: ServerBetaRequestOptions = {},
+  ): Promise<ServerBetaRecordEventResponse> {
     const body = this.buildEventPayload(input);
     const path = input.generate === false ? '/v1/events?generate=false' : '/v1/events';
-    return this.request<ServerBetaRecordEventResponse>('POST', path, body);
+    return this.request<ServerBetaRecordEventResponse>('POST', path, body, options);
   }
 
   async endSession(input: ServerBetaEndSessionRequest): Promise<ServerBetaEndSessionResponse> {
@@ -370,6 +380,8 @@ export class ServerBetaClient {
       ...(input.serverSessionId !== undefined ? { serverSessionId: input.serverSessionId } : {}),
       ...(input.contentSessionId !== undefined ? { contentSessionId: input.contentSessionId } : {}),
       ...(input.memorySessionId !== undefined ? { memorySessionId: input.memorySessionId } : {}),
+      ...(input.sourceEventId !== undefined ? { sourceEventId: input.sourceEventId } : {}),
+      ...(input.platformSource !== undefined ? { platformSource: input.platformSource } : {}),
       ...(input.payload !== undefined ? { payload: input.payload } : {}),
     };
   }
@@ -378,6 +390,7 @@ export class ServerBetaClient {
     method: 'GET' | 'POST',
     path: string,
     body?: unknown,
+    options: ServerBetaRequestOptions = {},
   ): Promise<T> {
     if (!this.apiKey || !this.apiKey.trim()) {
       throw new ServerBetaClientError(
@@ -400,7 +413,7 @@ export class ServerBetaClient {
 
     let response: Response;
     try {
-      response = await fetchWithTimeout(url, init, this.timeoutMs);
+      response = await fetchWithTimeout(url, init, options.timeoutMs ?? this.timeoutMs);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       const isTimeout = /timed out|timeout/i.test(message);

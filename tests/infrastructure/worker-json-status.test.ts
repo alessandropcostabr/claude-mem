@@ -2,48 +2,97 @@ import { describe, it, expect } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import path from 'path';
-import { buildStatusOutput, StatusOutput } from '../../src/services/worker-service.js';
+import {
+  buildCodexSessionStartOutput,
+  buildStatusOutput,
+  prepareWorkerForHook,
+  shouldEnsureWorkerBeforeHook,
+  StatusOutput,
+} from '../../src/services/worker-service.js';
 
 const WORKER_SCRIPT = path.join(__dirname, '../../plugin/scripts/worker-service.cjs');
 
-function runWorkerStart(): { stdout: string; exitCode: number } {
+function runWorkerStart(codex = false): { stdout: string; stderr: string; exitCode: number } {
   const result = spawnSync('bun', [WORKER_SCRIPT, 'start'], {
     encoding: 'utf-8',
-    timeout: 60000
+    timeout: 60000,
+    env: codex ? { ...process.env, CLAUDE_MEM_CODEX_HOOK: '1' } : process.env,
   });
-  return { stdout: result.stdout?.trim() || '', exitCode: result.status || 0 };
+  return {
+    stdout: result.stdout?.trim() || '',
+    stderr: result.stderr?.trim() || '',
+    exitCode: result.status || 0,
+  };
 }
 
 describe('worker-json-status', () => {
+  describe('hook worker pre-start policy', () => {
+    it('skips worker startup for every server-beta hook', () => {
+      expect(shouldEnsureWorkerBeforeHook('claude-code', 'observation', 'server-beta')).toBe(false);
+      expect(shouldEnsureWorkerBeforeHook('codex', 'context', 'server-beta')).toBe(false);
+    });
+
+    it('bounds Codex observation while preserving legacy worker recovery', async () => {
+      expect(shouldEnsureWorkerBeforeHook('codex', 'observation', 'worker')).toBe(false);
+      expect(shouldEnsureWorkerBeforeHook('claude-code', 'observation', 'worker')).toBe(true);
+      expect(shouldEnsureWorkerBeforeHook('codex', 'context', 'worker')).toBe(true);
+
+      const starts: number[] = [];
+      const startWorker = async (port: number) => {
+        starts.push(port);
+        return 'ready' as const;
+      };
+      expect(await prepareWorkerForHook('codex', 'observation', 'worker', 39001, startWorker)).toBeNull();
+      expect(await prepareWorkerForHook('claude-code', 'observation', 'worker', 39002, startWorker)).toBe('ready');
+      expect(starts).toEqual([39002]);
+    });
+  });
+
   describe('buildStatusOutput', () => {
-    it('returns only Codex-supported SessionStart fields when ready', () => {
+    it('preserves the Claude worker status contract', () => {
       const result: StatusOutput = buildStatusOutput('ready');
 
-      expect(result).toEqual({ continue: true, suppressOutput: true });
-      expect('status' in result).toBe(false);
-      expect('message' in result).toBe(false);
+      expect(result).toEqual({ continue: true, status: 'ready', suppressOutput: true });
     });
 
-    it('routes readiness details through systemMessage', () => {
+    it('preserves Claude readiness details', () => {
       expect(buildStatusOutput('ready', 'Worker started; still warming up')).toEqual({
         continue: true,
+        status: 'ready',
+        message: 'Worker started; still warming up',
         suppressOutput: true,
-        systemMessage: 'Worker started; still warming up'
       });
     });
 
-    it('routes failures through systemMessage without custom fields', () => {
-      expect(buildStatusOutput('error', 'Port in use but worker not responding')).toEqual({
-        continue: true,
-        suppressOutput: true,
-        systemMessage: 'Port in use but worker not responding'
-      });
-      expect(buildStatusOutput('error').systemMessage).toBe('Failed to start claude-mem worker');
-    });
-
-    it('serializes to a valid hook response', () => {
+    it('serializes the Claude status response', () => {
       const parsed = JSON.parse(JSON.stringify(buildStatusOutput('ready')));
-      expect(parsed).toEqual({ continue: true, suppressOutput: true });
+      expect(parsed).toEqual({ continue: true, status: 'ready', suppressOutput: true });
+    });
+  });
+
+  describe('Codex SessionStart compatibility', () => {
+    it('returns only supported fields when ready', () => {
+      expect(buildCodexSessionStartOutput('ready')).toEqual({ continue: true });
+    });
+
+    it('maps warming state to a fixed systemMessage', () => {
+      const result = buildCodexSessionStartOutput('ready', 'raw warming diagnostic');
+      expect(result).toEqual({
+        continue: true,
+        systemMessage: 'claude-mem worker is still warming up.',
+      });
+      expect(result.systemMessage).not.toContain('raw warming diagnostic');
+    });
+
+    it('maps failures to a fixed systemMessage without private fields', () => {
+      const result = buildCodexSessionStartOutput('error', 'raw boot failure diagnostic');
+      expect(result).toEqual({
+        continue: true,
+        systemMessage: 'claude-mem worker failed to start. Run npx claude-mem doctor.',
+      });
+      expect(result).not.toHaveProperty('status');
+      expect(result).not.toHaveProperty('message');
+      expect(result).not.toHaveProperty('suppressOutput');
     });
   });
 
@@ -55,7 +104,7 @@ describe('worker-json-status', () => {
           return;
         }
 
-        const { stdout, exitCode } = runWorkerStart();
+        const { stdout, exitCode } = runWorkerStart(true);
 
         expect(exitCode).toBe(0);
 
@@ -63,10 +112,7 @@ describe('worker-json-status', () => {
 
         const parsed = JSON.parse(stdout);
 
-        expect(parsed.continue).toBe(true);
-        expect(parsed.suppressOutput).toBe(true);
-        expect('status' in parsed).toBe(false);
-        expect('message' in parsed).toBe(false);
+        expect(parsed).toEqual({ continue: true });
       });
 
       it('should use only standard hook response fields', () => {
@@ -75,13 +121,12 @@ describe('worker-json-status', () => {
           return;
         }
 
-        const { stdout } = runWorkerStart();
+        const { stdout } = runWorkerStart(true);
         const parsed = JSON.parse(stdout);
 
         expect(parsed.continue).toBe(true);
-        expect(parsed.suppressOutput).toBe(true);
         expect(Object.keys(parsed).every((key) =>
-          ['continue', 'suppressOutput', 'systemMessage'].includes(key)
+          ['continue', 'systemMessage'].includes(key)
         )).toBe(true);
       });
     });
@@ -101,7 +146,7 @@ describe('worker-json-status', () => {
     });
   });
 
-  describe('Claude Code and Codex hook framework compatibility', () => {
+  describe('Claude Code hook compatibility', () => {
     it('should always exit with code 0', () => {
       if (!existsSync(WORKER_SCRIPT)) {
         console.log('Skipping CLI test - worker script not built');
@@ -119,20 +164,13 @@ describe('worker-json-status', () => {
         return;
       }
 
-      const result = spawnSync('bun', [WORKER_SCRIPT, 'start'], {
-        encoding: 'utf-8',
-        timeout: 60000
-      });
-
-      const stdout = result.stdout?.trim() || '';
-      const stderr = result.stderr?.trim() || '';
+      const { stdout, stderr } = runWorkerStart();
 
       expect(() => JSON.parse(stdout)).not.toThrow();
 
       const parsed = JSON.parse(stdout);
       expect(parsed).toHaveProperty('continue');
-      expect(parsed).not.toHaveProperty('status');
-      expect(parsed).not.toHaveProperty('message');
+      expect(parsed).toHaveProperty('status', 'ready');
 
       if (stderr) {
         try {
@@ -188,13 +226,13 @@ describe('worker-json-status', () => {
       expect(parsed.suppressOutput).toBe(true);
     });
 
-    it('should not include custom status fields rejected by Codex', () => {
+    it('Codex mode should not include private status fields', () => {
       if (!existsSync(WORKER_SCRIPT)) {
         console.log('Skipping CLI test - worker script not built');
         return;
       }
 
-      const { stdout } = runWorkerStart();
+      const { stdout } = runWorkerStart(true);
       const parsed = JSON.parse(stdout);
 
       expect(parsed).not.toHaveProperty('status');

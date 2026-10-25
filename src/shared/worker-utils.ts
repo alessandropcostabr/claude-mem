@@ -522,6 +522,10 @@ export function isWorkerFallback<T>(result: WorkerCallResult<T>): result is Work
 
 export interface WorkerFallbackOptions {
   timeoutMs?: number;
+  /** Skip lazy startup/readiness waits when the host imposes a short wire timeout. */
+  skipEnsure?: boolean;
+  /** Return a no-op fallback on transport failure without incrementing fail-loud state. */
+  failOpen?: boolean;
 }
 
 export async function executeWithWorkerFallback<T = unknown>(
@@ -530,10 +534,12 @@ export async function executeWithWorkerFallback<T = unknown>(
   body?: unknown,
   options: WorkerFallbackOptions = {},
 ): Promise<WorkerCallResult<T>> {
-  const alive = await ensureWorkerAliveOnce();
-  if (!alive) {
-    recordWorkerUnreachable();
-    return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
+  if (!options.skipEnsure) {
+    const alive = await ensureWorkerAliveOnce();
+    if (!alive) {
+      if (!options.failOpen) recordWorkerUnreachable();
+      return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
+    }
   }
 
   const init: { method: string; headers?: Record<string, string>; body?: string; timeoutMs?: number } = { method };
@@ -545,7 +551,16 @@ export async function executeWithWorkerFallback<T = unknown>(
     init.timeoutMs = options.timeoutMs;
   }
 
-  const response = await workerHttpRequest(url, init);
+  let response: Response;
+  try {
+    response = await workerHttpRequest(url, init);
+  } catch (error: unknown) {
+    if (!options.failOpen) throw error;
+    logger.warn('SYSTEM', `Worker API ${method} ${url} unavailable; skipping hook API call`, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
+  }
   if (!response.ok) {
     const text = await response.text().catch(() => '');
     resetWorkerFailureCounter();

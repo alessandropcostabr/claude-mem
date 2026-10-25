@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const CODEX_OBSERVATION_TIMEOUT_SECONDS = 5;
 
 const WORKER_SERVICE = {
   name: 'worker-service',
@@ -65,9 +66,9 @@ function shellTemplateManifest(buildShellCommand) {
     host: 'claude-code', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
     trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', ...extra,
   });
-  const codexHook = (tail) => buildShellCommand({
+  const codexHook = (tail, extra = {}) => buildShellCommand({
     host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-    trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
+    trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', ...extra,
   });
 
   return {
@@ -95,10 +96,13 @@ function shellTemplateManifest(buildShellCommand) {
           trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
           notFoundMessage: 'claude-mem: version-check.js not found',
         }),
-        'SessionStart.0.1': codexHook(['start']),
+        'SessionStart.0.1': codexHook(['start'], { extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' } }),
         'SessionStart.0.2': codexHook(['hook', 'codex', 'context']),
         'UserPromptSubmit.0.0': codexHook(['hook', 'codex', 'session-init']),
         'PreToolUse.0.0': codexHook(['hook', 'codex', 'file-context']),
+        // Observation capture stays synchronous so a delayed event cannot cross
+        // turn boundaries. The 5 s budget includes the 2 s server attempt in
+        // observation.ts and leaves time for one durable local spool write.
         'PostToolUse.0.0': codexHook(['hook', 'codex', 'observation']),
         'Stop.0.0': codexHook(['hook', 'codex', 'summarize']),
         'PostCompact.0.0': codexHook(['hook', 'codex', 'post-compact']),
@@ -582,6 +586,13 @@ async function buildHooks() {
       if (!validCodexHookEvents.has(eventName)) {
         throw new Error(`plugin/hooks/codex-hooks.json contains unknown Codex hook event: ${eventName}`);
       }
+    }
+    // Observation capture stays synchronous so events cannot cross turn
+    // boundaries. Five seconds includes the 2 s server attempt plus startup
+    // and one durable local spool write; keep this guard aligned with observation.ts.
+    const codexObservationHook = codexHooks.hooks?.PostToolUse?.[0]?.hooks?.[0];
+    if (codexObservationHook?.timeout !== CODEX_OBSERVATION_TIMEOUT_SECONDS) {
+      throw new Error(`Codex PostToolUse timeout must be ${CODEX_OBSERVATION_TIMEOUT_SECONDS} seconds`);
     }
     const codexMarketplace = JSON.parse(fs.readFileSync('.agents/plugins/marketplace.json', 'utf-8'));
     const claudeMemMarketplaceEntry = (codexMarketplace.plugins ?? []).find((plugin) => plugin.name === 'claude-mem');

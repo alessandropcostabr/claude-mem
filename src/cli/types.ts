@@ -6,6 +6,7 @@ export interface NormalizedHookInput {
   toolName?: string;
   toolInput?: unknown;
   toolResponse?: unknown;
+  toolUseId?: string;
   transcriptPath?: string;
   lastAssistantMessage?: string;
   turnId?: string;
