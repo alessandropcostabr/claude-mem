@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import path from 'path';
@@ -399,9 +399,15 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     return `${resolution} echo "RESOLVED=$_P"`;
   }
 
-  function shellEval(command: string, env: Record<string, string>): { status: number | null; stdout: string; stderr: string } {
-    const result = spawnSync('bash', ['-c', command], {
+  function shellEval(
+    command: string,
+    env: Record<string, string>,
+    cwd?: string,
+    shell = 'bash'
+  ): { status: number | null; stdout: string; stderr: string } {
+    const result = spawnSync(shell, ['-c', command], {
       env: { PATH: process.env.PATH ?? '', ...env },
+      cwd,
       encoding: 'utf-8',
     });
     return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
@@ -446,6 +452,57 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
         // ls -dt yields a trailing slash; the hook trims it via _R="${_R%/}".
         expect(stdout).toContain(`RESOLVED=${cacheRoot}`);
       }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves the highest stable MCP cache version instead of the newest directory', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    const cacheBase = path.join(
+      home,
+      '.codex',
+      'plugins',
+      'cache',
+      'claude-mem-local',
+      'claude-mem'
+    );
+    const versions = [
+      '13.4.0',
+      '13.4.3',
+      '13.5.0-beta',
+      '013.99.99',
+      '13.04.99',
+      '.rollback',
+      'invalid',
+    ];
+    for (const version of versions) {
+      const scripts = path.join(cacheBase, version, 'scripts');
+      mkdirSync(scripts, { recursive: true });
+      writeFileSync(path.join(scripts, 'mcp-server.cjs'), '');
+    }
+
+    // Reproduce rollout ordering: the older rollback is copied most recently.
+    const oldTime = new Date('2026-10-24T12:00:00Z');
+    const newTime = new Date('2026-10-25T12:00:00Z');
+    utimesSync(path.join(cacheBase, '13.4.3'), oldTime, oldTime);
+    utimesSync(path.join(cacheBase, '13.4.0'), newTime, newTime);
+
+    try {
+      const { stdout, status, stderr } = shellEval(
+        instrument(MCP_EXPECTED),
+        {
+          HOME: home,
+          CLAUDE_CONFIG_DIR: path.join(home, '.claude'),
+        },
+        home,
+        'sh'
+      );
+      expect(status).toBe(0);
+      expect(stderr).toBe('');
+      expect(stdout).toContain(`RESOLVED=${path.join(cacheBase, '13.4.3')}`);
+      expect(stdout).not.toContain('13.4.0');
+      expect(stdout).not.toContain('13.5.0-beta');
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
