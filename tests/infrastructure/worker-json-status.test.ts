@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'bun:test';
-import { spawnSync } from 'child_process';
-import { existsSync } from 'fs';
+import { afterAll, beforeAll, describe, it, expect } from 'bun:test';
+import { spawn } from 'child_process';
+import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { createServer, type Server } from 'http';
+import { tmpdir } from 'os';
 import path from 'path';
 import {
   buildCodexSessionStartOutput,
@@ -12,18 +14,83 @@ import {
 
 const WORKER_SCRIPT = path.join(__dirname, '../../plugin/scripts/worker-service.cjs');
 
-function runWorkerStart(codex = false): { stdout: string; stderr: string; exitCode: number } {
-  const result = spawnSync('bun', [WORKER_SCRIPT, 'start'], {
-    encoding: 'utf-8',
-    timeout: 60000,
-    env: codex ? { ...process.env, CLAUDE_MEM_CODEX_HOOK: '1' } : process.env,
-  });
-  return {
-    stdout: result.stdout?.trim() || '',
-    stderr: result.stderr?.trim() || '',
-    exitCode: result.status || 0,
-  };
+interface WorkerStartResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
 }
+
+let healthServer: Server | null = null;
+let testDataDir: string | null = null;
+let claudeStartResult: WorkerStartResult | null = null;
+let codexStartResult: WorkerStartResult | null = null;
+
+function runWorkerStart(port: number, dataDir: string, codex = false): Promise<WorkerStartResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('bun', [WORKER_SCRIPT, 'start'], {
+      env: {
+        ...process.env,
+        CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+        CLAUDE_MEM_WORKER_PORT: String(port),
+        CLAUDE_MEM_DATA_DIR: dataDir,
+        CLAUDE_CONFIG_DIR: path.join(dataDir, 'claude-config'),
+        ...(codex ? { CLAUDE_MEM_CODEX_HOOK: '1' } : { CLAUDE_MEM_CODEX_HOOK: '' }),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf-8');
+    child.stderr.setEncoding('utf-8');
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.once('error', reject);
+    const timeout = setTimeout(() => child.kill('SIGTERM'), 4000);
+    child.once('close', code => {
+      clearTimeout(timeout);
+      resolve({
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        exitCode: code ?? 1,
+      });
+    });
+  });
+}
+
+beforeAll(async () => {
+  if (!existsSync(WORKER_SCRIPT)) return;
+
+  testDataDir = mkdtempSync(path.join(tmpdir(), 'claude-mem-worker-status-'));
+  healthServer = createServer((request, response) => {
+    if (request.url === '/api/health' || request.url === '/api/readiness') {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ status: 'ok' }));
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise<void>((resolve, reject) => {
+    healthServer!.once('error', reject);
+    healthServer!.listen(0, '127.0.0.1', resolve);
+  });
+  const address = healthServer.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('Expected health server to bind to an ephemeral TCP port');
+  }
+
+  claudeStartResult = await runWorkerStart(address.port, testDataDir, false);
+  codexStartResult = await runWorkerStart(address.port, testDataDir, true);
+});
+
+afterAll(async () => {
+  if (healthServer) {
+    await new Promise<void>((resolve, reject) => {
+      healthServer!.close(error => error ? reject(error) : resolve());
+    });
+  }
+  if (testDataDir) rmSync(testDataDir, { recursive: true, force: true });
+});
 
 describe('worker-json-status', () => {
   describe('hook worker pre-start policy', () => {
@@ -104,7 +171,7 @@ describe('worker-json-status', () => {
           return;
         }
 
-        const { stdout, exitCode } = runWorkerStart(true);
+        const { stdout, exitCode } = codexStartResult!;
 
         expect(exitCode).toBe(0);
 
@@ -121,7 +188,7 @@ describe('worker-json-status', () => {
           return;
         }
 
-        const { stdout } = runWorkerStart(true);
+        const { stdout } = codexStartResult!;
         const parsed = JSON.parse(stdout);
 
         expect(parsed.continue).toBe(true);
@@ -153,7 +220,7 @@ describe('worker-json-status', () => {
         return;
       }
 
-      const { exitCode } = runWorkerStart();
+      const { exitCode } = claudeStartResult!;
 
       expect(exitCode).toBe(0);
     });
@@ -164,7 +231,7 @@ describe('worker-json-status', () => {
         return;
       }
 
-      const { stdout, stderr } = runWorkerStart();
+      const { stdout, stderr } = claudeStartResult!;
 
       expect(() => JSON.parse(stdout)).not.toThrow();
 
@@ -188,7 +255,7 @@ describe('worker-json-status', () => {
         return;
       }
 
-      const { stdout } = runWorkerStart();
+      const { stdout } = claudeStartResult!;
 
       let parsed: unknown;
       expect(() => {
@@ -206,7 +273,7 @@ describe('worker-json-status', () => {
         return;
       }
 
-      const { stdout } = runWorkerStart();
+      const { stdout } = claudeStartResult!;
       const parsed = JSON.parse(stdout);
 
       expect(parsed.continue).toBe(true);
@@ -220,7 +287,7 @@ describe('worker-json-status', () => {
         return;
       }
 
-      const { stdout } = runWorkerStart();
+      const { stdout } = claudeStartResult!;
       const parsed = JSON.parse(stdout);
 
       expect(parsed.suppressOutput).toBe(true);
@@ -232,7 +299,7 @@ describe('worker-json-status', () => {
         return;
       }
 
-      const { stdout } = runWorkerStart(true);
+      const { stdout } = codexStartResult!;
       const parsed = JSON.parse(stdout);
 
       expect(parsed).not.toHaveProperty('status');
