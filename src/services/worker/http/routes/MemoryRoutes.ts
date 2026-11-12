@@ -6,8 +6,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
 import { resolveRuntimeContext } from '../../../hooks/runtime-selector.js';
-import { selfAuthorTags, parseCheckpointSessionId } from '../../../../shared/self-author.js';
-import { hostname } from 'os';
+import { buildServerBetaObservationRequest } from '../../../../shared/server-beta-save-observation.js';
 
 const saveMemorySchema = z.object({
   text: z.string().trim().min(1),
@@ -245,7 +244,7 @@ export class MemoryRoutes extends BaseRouteHandler {
     const {
       type, title, subtitle, narrative, text: bodyText,
       facts, concepts, files_read, files_modified,
-      project, generated_by_model, checkpoint_key
+      project, generated_by_model
     } = req.body;
 
     const narrativeText = narrative || bodyText;
@@ -257,37 +256,13 @@ export class MemoryRoutes extends BaseRouteHandler {
     // fleet PG (.253). See feedback_observation-add-content-undefined / project_self_author.
     const runtime = resolveRuntimeContext();
     if (runtime.runtime === 'server-beta') {
-      const computedTitle = title
-        || narrativeText.substring(0, 60).trim() + (narrativeText.length > 60 ? '...' : '');
-      // Recover the CC session id from the C-prime checkpoint key so the
-      // observation is attributable to its session (server_session_id is NULL on
-      // the save_observation path — no PG session row id is known here).
-      const contentSessionId = parseCheckpointSessionId(checkpoint_key);
-      const metadata: Record<string, unknown> = {
-        type,
-        title: computedTitle,
-        ...(subtitle ? { subtitle } : {}),
-        facts: MemoryRoutes.coerceStringArray(facts),
-        concepts: MemoryRoutes.coerceStringArray(concepts),
-        files_read: MemoryRoutes.coerceStringArray(files_read),
-        files_modified: MemoryRoutes.coerceStringArray(files_modified),
-        ...(generated_by_model ? { generated_by_model } : {}),
-        // Case-study v2 regime tags (design §10.3): regime/origin/host so C
-        // (Stop) and C-prime (Checkpoint Rider) are separable in PG without
-        // depending on the generation_key format.
-        ...selfAuthorTags(checkpoint_key, hostname()),
-        ...(contentSessionId ? { content_session_id: contentSessionId } : {}),
-      };
+      // Mapping (kind, metadata, regime tags, content_session_id) lives in one shared
+      // builder so this worker path and the MCP direct path (mcp-server.ts, used when
+      // no local worker is running) stay byte-identical.
+      const built = buildServerBetaObservationRequest(req.body, runtime.projectId);
+      const computedTitle = built.title;
       try {
-        const resp = await runtime.client.addObservation({
-          projectId: runtime.projectId,
-          content: narrativeText,
-          kind: type,
-          metadata,
-          // Sent so the server can attribute server_session_id when it maps a
-          // content session id; harmless if it ignores the field.
-          ...(contentSessionId ? { contentSessionId } : {}),
-        });
+        const resp = await runtime.client.addObservation(built.request);
         logger.info('HTTP', 'Structured observation saved via server-beta', {
           id: resp.memory.id,
           type,
