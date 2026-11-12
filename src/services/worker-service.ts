@@ -922,6 +922,16 @@ async function main() {
 
   switch (command) {
     case 'start': {
+      // In server-beta runtime memory lives in the fleet PG and the hooks/MCP talk to the
+      // server directly, so there is no local worker to start. SessionStart hooks run this
+      // command on every session: spawning a daemon here only recreates an idle worker and an
+      // empty SQLite. An explicit `start --force` still starts it (viewer, debugging).
+      const { selectRuntime } = await import('./hooks/runtime-selector.js');
+      if (selectRuntime() === 'server-beta' && !commandArgs.includes('--force')) {
+        logger.info('SYSTEM', 'RUNTIME=server-beta: not starting a local worker (use `start --force` to override)');
+        exitWithStatus('ready');
+      }
+
       const result = await ensureWorkerStarted(port);
       if (result === 'dead') {
         exitWithStatus('error', 'Failed to start worker');
