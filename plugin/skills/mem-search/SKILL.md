@@ -5,7 +5,9 @@ description: Search claude-mem's persistent cross-session memory database. Use w
 
 # Memory Search
 
-Search past work across all sessions. Simple workflow: search -> filter -> fetch.
+Search past work across all sessions. The read workflow depends on the active
+claude-mem runtime; PostgreSQL/server-beta uses UUID-backed tools, while the
+legacy worker uses numeric observation IDs.
 
 ## When to Use
 
@@ -15,13 +17,43 @@ Use when users ask about PREVIOUS sessions (not current conversation):
 - "How did we solve X last time?"
 - "What happened last week?"
 
-## 3-Layer Workflow (ALWAYS Follow)
+## Select the Runtime Workflow First
+
+Use the runtime identified by the claude-mem MCP `__IMPORTANT` guidance or the
+session configuration. Do not probe the worker-only tools first when the active
+runtime is `server-beta`.
+
+### Server-beta Runtime (PostgreSQL / UUIDs)
+
+Use `observation_search` to filter results. It already returns complete
+PostgreSQL observation records, so their UUIDs must **not** be passed to
+`timeline` or `get_observations`.
+
+```
+observation_search(query="authentication", limit=20)
+```
+
+When a ready-to-inject context block is more useful than individual records,
+use:
+
+```
+observation_context(query="authentication", limit=10)
+```
+
+Both tools accept an optional `projectId`. Filter the returned observations in
+the response; no numeric-ID fetch step is required.
+
+### Worker Runtime (SQLite / Numeric IDs)
+
+Use the 3-layer workflow below only in the worker runtime.
+
+## Worker 3-Layer Workflow (ALWAYS Follow in Worker Runtime)
 
 **NEVER fetch full details without filtering first. 10x token savings.**
 
 ### Step 1: Search - Get Index with IDs
 
-Use the `search` MCP tool:
+Use the worker-only `search` MCP tool:
 
 ```
 search(query="authentication", limit=20, project="my-project")
@@ -50,7 +82,7 @@ search(query="authentication", limit=20, project="my-project")
 
 ### Step 2: Timeline - Get Context Around Interesting Results
 
-Use the `timeline` MCP tool:
+Use the worker-only `timeline` MCP tool:
 
 ```
 timeline(anchor=11131, depth_before=3, depth_after=3, project="my-project")
@@ -76,7 +108,7 @@ timeline(query="authentication", depth_before=3, depth_after=3, project="my-proj
 
 Review titles from Step 1 and context from Step 2. Pick relevant IDs. Discard the rest.
 
-Use the `get_observations` MCP tool:
+Use the worker-only `get_observations` MCP tool:
 
 ```
 get_observations(ids=[11131, 10942])
@@ -94,6 +126,20 @@ get_observations(ids=[11131, 10942])
 **Returns:** Complete observation objects with title, subtitle, narrative, facts, concepts, files (~500-1000 tokens each)
 
 ## Examples
+
+**Server-beta search with complete UUID-backed records:**
+
+```
+observation_search(query="bug", limit=20)
+```
+
+**Server-beta pre-joined context:**
+
+```
+observation_context(query="authentication", limit=10)
+```
+
+The remaining examples are for the worker runtime.
 
 **Find recent bug fixes:**
 
@@ -119,12 +165,16 @@ timeline(anchor=11131, depth_before=5, depth_after=5, project="my-project")
 get_observations(ids=[11131, 10942, 10855], orderBy="date_desc")
 ```
 
-## Why This Workflow?
+## Why the Worker Workflow Has Three Layers
 
 - **Search index:** ~50-100 tokens per result
 - **Full observation:** ~500-1000 tokens each
 - **Batch fetch:** 1 HTTP request vs N individual requests
 - **10x token savings** by filtering before fetching
+
+Server-beta deliberately differs: `observation_search` returns complete records
+in one UUID-backed response. Keep its `limit` focused, or request the compact
+pre-joined block from `observation_context`.
 
 ## Knowledge Agents
 

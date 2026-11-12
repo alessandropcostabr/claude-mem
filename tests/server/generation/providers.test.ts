@@ -15,14 +15,18 @@ import { OpenRouterObservationProvider } from '../../../src/server/generation/pr
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
 
-function makeContext(overrides: Partial<{ payload: unknown; serverSessionId: string | null }> = {}): ServerGenerationContext {
+function makeContext(overrides: Partial<{
+  payload: unknown;
+  serverSessionId: string | null;
+  sourceType: 'agent_event' | 'session_summary';
+}> = {}): ServerGenerationContext {
   return {
     job: {
       id: 'job-1',
       projectId: 'proj-1',
       teamId: 'team-1',
       agentEventId: 'evt-1',
-      sourceType: 'agent_event',
+      sourceType: overrides.sourceType ?? 'agent_event',
       sourceId: 'evt-1',
       serverSessionId: overrides.serverSessionId ?? null,
       jobType: 'observation_generate_for_event',
@@ -106,6 +110,17 @@ describe('shared error classification', () => {
 });
 
 describe('buildServerGenerationPrompt', () => {
+  it('asks summary jobs for summary XML and event jobs for observation XML', () => {
+    const summary = buildServerGenerationPrompt(makeContext({ sourceType: 'session_summary' }));
+    expect(summary.prompt).toContain('<summary>...</summary>');
+    expect(summary.prompt).toContain('<next_steps>');
+    expect(summary.prompt).not.toContain('<observation>...</observation>');
+
+    const event = buildServerGenerationPrompt(makeContext());
+    expect(event.prompt).toContain('<observation>...</observation>');
+    expect(event.prompt).not.toContain('<summary>...</summary>');
+  });
+
   it('strips <private> tags from event payload before sending', () => {
     const context = makeContext({
       payload: '<private>secret</private>visible',

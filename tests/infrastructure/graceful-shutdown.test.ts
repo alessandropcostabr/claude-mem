@@ -132,7 +132,9 @@ describe('GracefulShutdown', () => {
         shutdownAll: mock(async () => {})
       };
 
-      writePidFile({ pid: 99999, port: 37777, startedAt: new Date().toISOString() });
+      // The shutdown cascade is owner-guarded so it cannot erase a successor's
+      // PID file during restart. Exercise the owning-process case here.
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
       expect(existsSync(PID_FILE)).toBe(true);
 
       const config: GracefulShutdownConfig = {

@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { stripMemoryTagsFromPrompt, stripMemoryTagsFromJson, isInternalProtocolPayload } from '../../src/utils/tag-stripping.js';
+import { stripMemoryTagsFromPrompt, stripMemoryTagsFromJson, stripMemoryTagsFromJsonStrings, isInternalProtocolPayload } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -374,6 +374,19 @@ after`;
   });
 
   describe('privacy enforcement integration', () => {
+    it('strips nested, overlapping, and whitespace-close tags', () => {
+      expect(stripMemoryTagsFromPrompt(
+        'public <private>outer<claude-mem-context>secret</private>tail</claude-mem-context > end'
+      )).toBe('public  end');
+    });
+
+    it('strips tagged strings recursively without mutating the input', () => {
+      const input = { payload: { prompt: '<private>secret</private>', keep: ' exact ' } };
+      const result = stripMemoryTagsFromJsonStrings(input);
+      expect(result).toEqual({ payload: { prompt: '', keep: ' exact ' } });
+      expect(input.payload.prompt).toContain('secret');
+    });
+
     it('should allow empty result to trigger privacy skip', () => {
       const prompt = '<private>entirely private prompt</private>';
       const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);

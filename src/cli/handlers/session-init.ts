@@ -13,6 +13,103 @@ import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
 import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
+import {
+  getSelfAuthorConfig,
+  getCheckpointConfig,
+  getSubstantiveCount,
+  readCheckpointState,
+  writeCheckpointState,
+  advanceCheckpoint,
+  markCheckpointRiderEmitted,
+  consumeCheckpointRiderEmission,
+} from '../../shared/self-author.js';
+import type { SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+
+/**
+ * Checkpoint Rider (real-time self-author): when CLAUDE_MEM_SELF_AUTHOR_REALTIME
+ * is on, ride this UserPromptSubmit with a checkpoint reminder so the session
+ * self-authors at the turn tail. Returns the rider text to append to the
+ * injected context, or '' when no checkpoint fires. Off by default → no-op.
+ */
+function computeCheckpointRider(sessionId: string, settings: SettingsDefaults): string {
+  const env: Record<string, string | undefined> = {
+    CLAUDE_MEM_SELF_AUTHOR_REALTIME: settings.CLAUDE_MEM_SELF_AUTHOR_REALTIME,
+    CLAUDE_MEM_SELF_AUTHOR_COOLDOWN_PROMPTS: settings.CLAUDE_MEM_SELF_AUTHOR_COOLDOWN_PROMPTS,
+    CLAUDE_MEM_SELF_AUTHOR_MAX_OBS_PER_CHECKPOINT: settings.CLAUDE_MEM_SELF_AUTHOR_MAX_OBS_PER_CHECKPOINT,
+    CLAUDE_MEM_SELF_AUTHOR_FALLBACK_DELAY_MS: settings.CLAUDE_MEM_SELF_AUTHOR_FALLBACK_DELAY_MS,
+    CLAUDE_MEM_SELF_AUTHOR_ENABLED: settings.CLAUDE_MEM_SELF_AUTHOR_ENABLED,
+    CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: settings.CLAUDE_MEM_SELF_AUTHOR_THRESHOLD,
+    CLAUDE_MEM_DATA_DIR: settings.CLAUDE_MEM_DATA_DIR,
+  };
+  const cpCfg = getCheckpointConfig(env);
+  if (!cpCfg.realtimeEnabled) return '';
+  const saCfg = getSelfAuthorConfig(env);
+  const prev = readCheckpointState(sessionId, saCfg.stateDir);
+  const { state, rider } = advanceCheckpoint(prev, {
+    sessionId,
+    substantiveCount: getSubstantiveCount(sessionId, saCfg.stateDir),
+    threshold: saCfg.threshold,
+    realtimeEnabled: true,
+    cooldownPrompts: cpCfg.cooldownPrompts,
+    // The claude-mem MCP server provides save_observation whenever the plugin
+    // is loaded, so it is available by construction in a tracked session.
+    saveObservationAvailable: true,
+  });
+  writeCheckpointState(sessionId, saCfg.stateDir, state);
+  if (!rider) return '';
+  return rider;
+}
+
+/**
+ * Persist evidence only when the handler is about to return the rider to the
+ * host. The marker snapshots (but does not reset) the substantive baseline;
+ * Stop acknowledges only that baseline after consuming the marker. If the
+ * marker cannot be written, the counter remains a safe fallback.
+ */
+function confirmCheckpointRiderEmission(
+  sessionId: string,
+  settings: SettingsDefaults,
+): void {
+  const saCfg = getSelfAuthorConfig({
+    CLAUDE_MEM_SELF_AUTHOR_ENABLED: settings.CLAUDE_MEM_SELF_AUTHOR_ENABLED,
+    CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: settings.CLAUDE_MEM_SELF_AUTHOR_THRESHOLD,
+    CLAUDE_MEM_DATA_DIR: settings.CLAUDE_MEM_DATA_DIR,
+  });
+  try {
+    const baseline = getSubstantiveCount(sessionId, saCfg.stateDir);
+    markCheckpointRiderEmitted(sessionId, saCfg.stateDir, baseline);
+  } catch (error: unknown) {
+    logger.warn('HOOK', 'session-init: could not persist checkpoint rider marker', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * A new UserPromptSubmit starts a new rider interval. Discard evidence from an
+ * interrupted previous interval before any early return or remote call; a new
+ * marker is created later only if this prompt actually returns a rider.
+ */
+export function invalidatePreviousCheckpointRider(
+  sessionId: string,
+  settings: SettingsDefaults,
+): boolean {
+  const saCfg = getSelfAuthorConfig({
+    CLAUDE_MEM_SELF_AUTHOR_ENABLED: settings.CLAUDE_MEM_SELF_AUTHOR_ENABLED,
+    CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: settings.CLAUDE_MEM_SELF_AUTHOR_THRESHOLD,
+    CLAUDE_MEM_DATA_DIR: settings.CLAUDE_MEM_DATA_DIR,
+  });
+  try {
+    return consumeCheckpointRiderEmission(sessionId, saCfg.stateDir);
+  } catch (error: unknown) {
+    // Fail open: an invalidation failure must not delay or reject the prompt.
+    // Marker TTL still bounds any interrupted artifact on disk.
+    logger.warn('HOOK', 'session-init: could not invalidate previous checkpoint rider marker', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
 
 interface SessionInitResponse {
   sessionDbId: number;
@@ -36,6 +133,9 @@ export const sessionInitHandler: EventHandler = {
       logger.warn('HOOK', 'session-init: No sessionId provided, skipping (Codex CLI or unknown platform)');
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
+
+    const promptSettings = loadFromFileOnce();
+    invalidatePreviousCheckpointRider(sessionId, promptSettings);
 
     if (!shouldTrackProject(cwd)) {
       logger.info('HOOK', 'Project excluded from tracking', { cwd });
@@ -75,7 +175,8 @@ export const sessionInitHandler: EventHandler = {
         // by CLAUDE_MEM_SEMANTIC_INJECT and a minimum prompt length, same as
         // the worker path. Best-effort: any failure just skips injection — the
         // session already started, so we never fall back to the worker here.
-        const sbSettings = loadFromFileOnce();
+        const sbSettings = promptSettings;
+        const riderContext = computeCheckpointRider(sessionId, sbSettings);
         const sbSemanticInject =
           String(sbSettings.CLAUDE_MEM_SEMANTIC_INJECT).toLowerCase() === 'true';
         if (sbSemanticInject && prompt.length >= 20 && prompt !== '[media prompt]') {
@@ -88,6 +189,7 @@ export const sessionInitHandler: EventHandler = {
             });
             const semanticContext = (semantic.context ?? '').trim();
             if (semanticContext) {
+              if (riderContext) confirmCheckpointRiderEmission(sessionId, sbSettings);
               logger.info('HOOK', 'session-init: server-beta semantic injection', {
                 contentSessionId: sessionId,
                 count: semantic.observations?.length ?? 0,
@@ -97,7 +199,9 @@ export const sessionInitHandler: EventHandler = {
                 suppressOutput: true,
                 hookSpecificOutput: {
                   hookEventName: 'UserPromptSubmit',
-                  additionalContext: `## Relevant Past Work (semantic match)\n\n${semanticContext}`,
+                  additionalContext: riderContext
+                    ? `## Relevant Past Work (semantic match)\n\n${semanticContext}\n\n${riderContext}`
+                    : `## Relevant Past Work (semantic match)\n\n${semanticContext}`,
                 },
               };
             }
@@ -106,6 +210,14 @@ export const sessionInitHandler: EventHandler = {
               error: semanticError instanceof Error ? semanticError.message : String(semanticError),
             });
           }
+        }
+        if (riderContext) {
+          confirmCheckpointRiderEmission(sessionId, sbSettings);
+          return {
+            continue: true,
+            suppressOutput: true,
+            hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: riderContext },
+          };
         }
         return { continue: true, suppressOutput: true };
       } catch (error: unknown) {

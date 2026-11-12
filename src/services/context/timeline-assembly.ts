@@ -27,8 +27,8 @@ import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer
 import { renderAgentEmptyState } from './formatters/AgentFormatter.js';
 import { renderHumanEmptyState } from './formatters/HumanFormatter.js';
 
-function cwdToDashed(cwd: string): string {
-  return cwd.replace(/\//g, '-');
+export function cwdToDashed(cwd: string): string {
+  return cwd.replace(/[./\\]/g, '-');
 }
 
 function parseAssistantTextFromLine(line: string): string | null {

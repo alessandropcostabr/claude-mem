@@ -9,6 +9,7 @@ import type {
 } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
+import { formatContextReferenceId } from './id-display.js';
 
 function formatHeaderDateTime(): string {
   const now = new Date();
@@ -35,7 +36,7 @@ export function renderAgentLegend(fetchByIdSupported: boolean = true): string[] 
 
   const fetchLine = fetchByIdSupported
     ? `Fetch details: get_observations([IDs]) | Search: mem-search skill`
-    : `Fetch details: observation_search / mem-search skill`;
+    : `Fetch details: mem-search by title/context (short refs are display-only)`;
 
   return [
     `Legend: 🎯session ${typeLegendItems}`,
@@ -101,7 +102,8 @@ export function renderAgentTableRow(
   const icon = ModeManager.getInstance().getTypeIcon(obs.type);
   const time = timeDisplay ? compactTime(timeDisplay) : '"';
 
-  return `${obs.id} ${time} ${icon} ${title}`;
+  const refId = formatContextReferenceId(obs.id, _config);
+  return `${refId} ${time} ${icon} ${title}`;
 }
 
 export function renderAgentFullObservation(
@@ -116,7 +118,8 @@ export function renderAgentFullObservation(
   const time = timeDisplay ? compactTime(timeDisplay) : '"';
   const { readTokens, discoveryDisplay } = formatObservationTokenDisplay(obs, config);
 
-  output.push(`**${obs.id}** ${time} ${icon} **${title}**`);
+  const refId = formatContextReferenceId(obs.id, config);
+  output.push(`**${refId}** ${time} ${icon} **${title}**`);
   if (detailField) {
     output.push(detailField);
   }

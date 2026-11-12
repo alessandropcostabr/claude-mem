@@ -668,7 +668,7 @@ function mergeSettings(updates: Record<string, string>): boolean {
       current[key] = value;
     }
 
-    writeFileSync(path, JSON.stringify(current, null, 2), 'utf-8');
+    writeJsonFileAtomic(path, current, { mode: 0o600 });
     return true;
   } catch (error: unknown) {
     log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);

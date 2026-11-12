@@ -87,9 +87,16 @@ export function repairMalformedDatabase(dbPath: string): boolean {
     );
   }
 
+  // sqlite3 3.46–3.49 run the CLI in defensive mode by default but their `.recover`
+  // script does not turn it off, so replaying it is rejected ("object name reserved for
+  // internal use: sqlite_sequence", "table sqlite_master may not be modified"). 3.50+
+  // emits `.dbconfig defensive off` itself; prepending it is a no-op there.
+  const DEFENSIVE_OFF = '.dbconfig defensive off';
+  const replayScript = recoverSql.startsWith(DEFENSIVE_OFF) ? recoverSql : `${DEFENSIVE_OFF}\n${recoverSql}`;
+
   try {
     execFileSync('sqlite3', [recoveredPath], {
-      input: recoverSql,
+      input: replayScript,
       maxBuffer: RECOVER_MAX_BUFFER_BYTES,
       encoding: 'utf-8',
     });

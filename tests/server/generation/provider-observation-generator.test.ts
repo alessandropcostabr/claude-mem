@@ -150,4 +150,33 @@ describe('ProviderObservationGenerator', () => {
     });
     expect(reloaded?.status).toBe('failed');
   });
+
+  it('times out a hung provider call and requeues it as transient', async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const provider: ServerGenerationProvider = {
+      providerLabel: 'openrouter',
+      generate(_context, signal) {
+        receivedSignal = signal;
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+    };
+    const generator = new ProviderObservationGenerator({
+      pool: pool as unknown as pg.Pool,
+      provider,
+      providerTimeoutMs: 50,
+    } as unknown as ConstructorParameters<typeof ProviderObservationGenerator>[0]);
+
+    await expect(generator.process(makeJob())).rejects.toThrow(/timed out after 50ms/);
+    expect(receivedSignal?.aborted).toBe(true);
+
+    const reloaded = await storage.observationGenerationJobs.getByIdForScope({
+      id: jobId,
+      projectId,
+      teamId,
+    });
+    expect(reloaded?.status).toBe('queued');
+    expect(reloaded?.lastError).toMatchObject({ classification: 'transient' });
+  });
 });

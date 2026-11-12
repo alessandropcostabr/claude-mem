@@ -6,13 +6,14 @@ export interface NormalizedHookInput {
   toolName?: string;
   toolInput?: unknown;
   toolResponse?: unknown;
+  toolUseId?: string;
   transcriptPath?: string;
   lastAssistantMessage?: string;
   turnId?: string;
   stopHookActive?: boolean;
   permissionMode?: string;
   model?: string;
-  sessionSource?: 'startup' | 'resume' | 'clear';
+  sessionSource?: 'startup' | 'resume' | 'clear' | 'compact';
   filePath?: string;   
   edits?: unknown[];   
   metadata?: Record<string, unknown>;

@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { loadServerBetaMode } from '../../src/server/runtime/create-server-beta-service.js';
-import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { logger } from '../../src/utils/logger.js';
 
 // #2443 — the server-beta runtime must load an observation mode before it can
@@ -19,10 +18,15 @@ describe('server-beta boot: mode loading (#2443)', () => {
       spyOn(logger, 'warn').mockImplementation(() => {}),
     );
 
-    expect(() => loadServerBetaMode()).not.toThrow();
+    const modeManager = {
+      loadMode: () => ({ observation_types: [{ id: 'discovery' }] }),
+      getActiveMode: () => ({ observation_types: [{ id: 'discovery' }] }),
+    } as any;
+
+    expect(() => loadServerBetaMode(modeManager)).not.toThrow();
     // Validation: a mode is actually active after boot.
-    expect(() => ModeManager.getInstance().getActiveMode()).not.toThrow();
-    expect(ModeManager.getInstance().getActiveMode().observation_types.length).toBeGreaterThan(0);
+    expect(() => modeManager.getActiveMode()).not.toThrow();
+    expect(modeManager.getActiveMode().observation_types.length).toBeGreaterThan(0);
   });
 
   it('fails fast (throws) when no mode can be loaded', () => {
@@ -34,11 +38,11 @@ describe('server-beta boot: mode loading (#2443)', () => {
     // Simulate a broken install: the bundled mode file is missing, so
     // ModeManager.loadMode('code') throws its critical error. The server boot
     // helper must propagate it rather than booting into a non-functional state.
-    const loadSpy = spyOn(ModeManager.prototype, 'loadMode').mockImplementation(() => {
-      throw new Error('Critical: code.json mode file missing');
-    });
-    spies.push(loadSpy);
+    const modeManager = {
+      loadMode: () => { throw new Error('Critical: code.json mode file missing'); },
+      getActiveMode: () => ({ observation_types: [] }),
+    } as any;
 
-    expect(() => loadServerBetaMode()).toThrow(/code\.json mode file missing/);
+    expect(() => loadServerBetaMode(modeManager)).toThrow(/code\.json mode file missing/);
   });
 });

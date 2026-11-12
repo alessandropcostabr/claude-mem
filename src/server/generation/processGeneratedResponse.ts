@@ -359,7 +359,10 @@ export async function processSessionSummaryResponse(
 
   const summary = parsed.summary ?? null;
   const skipped = summary?.skipped === true;
-  const summaryContent = summary ? renderSummaryContent(summary) : '';
+  const fallbackObservations = !summary && !skipped ? parsed.observations : [];
+  const summaryContent = summary
+    ? renderSummaryContent(summary)
+    : fallbackObservations.map(renderObservationContent).join('\n\n');
   const privateContentDetected = skipped || summaryContent.trim().length === 0;
 
   return await withPostgresTransaction(input.pool, async (client) => {
@@ -553,6 +556,9 @@ function renderObservationContent(observation: ParsedObservation): string {
   if (observation.narrative) parts.push(observation.narrative);
   if (observation.facts && observation.facts.length > 0) {
     parts.push(observation.facts.map(f => `- ${f}`).join('\n'));
+  }
+  if (parts.length === 0 && observation.concepts && observation.concepts.length > 0) {
+    parts.push(`Concepts: ${observation.concepts.join(', ')}`);
   }
   return parts.join('\n\n').trim();
 }

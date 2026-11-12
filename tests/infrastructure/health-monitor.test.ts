@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import net from 'net';
+import { readFileSync } from 'fs';
 import {
   isPortInUse,
   waitForHealth,
@@ -157,6 +158,11 @@ describe('HealthMonitor', () => {
   });
 
   describe('getInstalledPluginVersion', () => {
+    it('prefers the active host plugin root over the legacy marketplace', () => {
+      const expected = JSON.parse(readFileSync('package.json', 'utf-8')).version;
+      expect(getInstalledPluginVersion(process.cwd())).toBe(expected);
+    });
+
     it('should return a valid semver string', () => {
       const version = getInstalledPluginVersion();
 

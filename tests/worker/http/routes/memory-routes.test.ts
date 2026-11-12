@@ -91,6 +91,7 @@ describe('MemoryRoutes — POST /api/memory/save (#2116)', () => {
   function buildHandler(): (req: Request, res: Response) => void {
     const mockApp: any = {
       get: mock(() => {}),
+      patch: mock(() => {}),
       delete: mock(() => {}),
       use: mock(() => {}),
     };
