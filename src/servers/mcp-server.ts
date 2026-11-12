@@ -38,6 +38,10 @@ import {
   type SelectedRuntime,
   type ServerBetaRuntimeContext,
 } from '../services/hooks/runtime-selector.js';
+import {
+  buildServerBetaObservationRequest,
+  type SaveObservationArgs,
+} from '../shared/server-beta-save-observation.js';
 
 let mcpServerDirResolutionFailed = false;
 const mcpServerDir = (() => {
@@ -333,6 +337,36 @@ async function handleObservationAdd(
     };
     const response = await ctx.client.addObservation(request);
     return formatJsonResult(response);
+  } catch (error) {
+    return formatToolError(error);
+  }
+}
+
+// save_observation: in server-beta runtime the structured write goes STRAIGHT to the
+// server, using the same request builder as the worker route
+// (src/shared/server-beta-save-observation.ts). This keeps the tool — and therefore
+// the Stop self-author and the Checkpoint Rider — working when no local worker/SQLite
+// exists (the fleet is PG-only on .253). We deliberately do NOT fall back to the local
+// worker when the server write fails: that would recreate the "local island" bug
+// (observations invisible to the fleet PG). Worker runtime keeps the original path.
+async function handleSaveObservation(args: SaveObservationArgs) {
+  if (!resolveServerBetaToolContext()) {
+    return await callWorkerAPIPost('/api/memory/save-observation', args);
+  }
+  try {
+    const ctx = requireServerBetaForObservationTool('save_observation');
+    const built = buildServerBetaObservationRequest(args, ctx.projectId);
+    const response = await ctx.client.addObservation(built.request);
+    return formatJsonResult({
+      success: true,
+      id: response.memory.id,
+      type: args.type,
+      title: built.title,
+      project: ctx.projectId,
+      generated_by_model: args.generated_by_model ?? null,
+      message: `Structured observation ${response.memory.id} saved to server-beta`,
+      runtime: 'server-beta',
+    });
   } catch (error) {
     return formatToolError(error);
   }
@@ -640,7 +674,7 @@ Use \`observation_search(query="...", limit=20)\` for PostgreSQL-backed observat
       required: ['type', 'narrative']
     },
     handler: async (args: any) => {
-      return await callWorkerAPIPost('/api/memory/save-observation', args);
+      return await handleSaveObservation(args);
     }
   },
   {
