@@ -16,9 +16,33 @@ export class BanditEngine {
     logSelections: true,
   };
 
+  /**
+   * False when the bandit tables are missing. No current migration creates
+   * `bandit_experiments` / `bandit_arms`, so on a FRESH database `loadFromDb` throws
+   * "no such table". The bandit is an optional subsystem: that must never abort the
+   * worker's core initialization (it left the worker answering 503 "Database is still
+   * initializing" forever). Selection state is then kept in memory only.
+   */
+  private persistent = true;
+
   init(db: Database): void {
     this.db = db;
-    this.loadFromDb();
+    try {
+      this.loadFromDb();
+    } catch (error) {
+      this.persistent = false;
+      logger.warn(
+        'WORKER',
+        'Bandit tables are not available; selection state will be kept in memory only',
+        {},
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    }
+  }
+
+  private persist(sql: string, ...params: any[]): void {
+    if (!this.persistent) return;
+    this.db.prepare(sql).run(...params);
   }
 
   setConfig(config: Partial<BanditConfig>): void {
@@ -33,9 +57,10 @@ export class BanditEngine {
       this.arms.set(experiment.id, new Map());
     }
 
-    this.db.prepare(
-      'INSERT OR IGNORE INTO bandit_experiments (id, description, reward_signals, created_at_epoch) VALUES (?, ?, ?, ?)'
-    ).run(experiment.id, experiment.description, JSON.stringify(experiment.rewardSignals), experiment.createdAt);
+    this.persist(
+      'INSERT OR IGNORE INTO bandit_experiments (id, description, reward_signals, created_at_epoch) VALUES (?, ?, ?, ?)',
+      experiment.id, experiment.description, JSON.stringify(experiment.rewardSignals), experiment.createdAt,
+    );
   }
 
   selectArm(experimentId: string, candidateArms: string[]): string {
@@ -100,9 +125,10 @@ export class BanditEngine {
     const arm = expArms.get(selected)!;
     arm.pulls += 1;
     arm.updatedAt = Date.now();
-    this.db.prepare(
-      'UPDATE bandit_arms SET pulls = ?, updated_at_epoch = ? WHERE experiment_id = ? AND arm_id = ?'
-    ).run(arm.pulls, arm.updatedAt, experimentId, selected);
+    this.persist(
+      'UPDATE bandit_arms SET pulls = ?, updated_at_epoch = ? WHERE experiment_id = ? AND arm_id = ?',
+      arm.pulls, arm.updatedAt, experimentId, selected,
+    );
 
     return selected;
   }
@@ -125,9 +151,10 @@ export class BanditEngine {
     arm.totalReward += reward;
     arm.updatedAt = Date.now();
 
-    this.db.prepare(
-      'UPDATE bandit_arms SET alpha = ?, beta = ?, total_reward = ?, updated_at_epoch = ? WHERE experiment_id = ? AND arm_id = ?'
-    ).run(arm.alpha, arm.beta, arm.totalReward, arm.updatedAt, experimentId, armId);
+    this.persist(
+      'UPDATE bandit_arms SET alpha = ?, beta = ?, total_reward = ?, updated_at_epoch = ? WHERE experiment_id = ? AND arm_id = ?',
+      arm.alpha, arm.beta, arm.totalReward, arm.updatedAt, experimentId, armId,
+    );
 
     if (this.config.logSelections) {
       logger.debug('BANDIT', `reward`, {
@@ -195,9 +222,10 @@ export class BanditEngine {
     const expArms = this.arms.get(experimentId)!;
     expArms.set(armId, arm);
 
-    this.db.prepare(
-      'INSERT OR IGNORE INTO bandit_arms (experiment_id, arm_id, alpha, beta, pulls, total_reward, updated_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(arm.experimentId, arm.armId, arm.alpha, arm.beta, arm.pulls, arm.totalReward, arm.updatedAt);
+    this.persist(
+      'INSERT OR IGNORE INTO bandit_arms (experiment_id, arm_id, alpha, beta, pulls, total_reward, updated_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      arm.experimentId, arm.armId, arm.alpha, arm.beta, arm.pulls, arm.totalReward, arm.updatedAt,
+    );
   }
 
   private loadFromDb(): void {
