@@ -1,5 +1,8 @@
 
-FROM node:20
+# Debian 13 (trixie, glibc 2.41): @derekstride/tree-sitter-sql >= 0.3.12 downloads
+# tree-sitter-cli v0.26.3 during `npm install`, and that binary needs glibc >= 2.39
+# (node:20 is Debian 12 / glibc 2.36, where the install fails).
+FROM node:20-trixie
 
 ENV DEBIAN_FRONTEND=noninteractive
 
