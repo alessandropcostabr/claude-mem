@@ -154,11 +154,12 @@ export function renderHumanFullObservation(
 
 export function renderHumanSummaryItem(
   summary: { id: ObservationId; request: string | null },
-  formattedTime: string
+  formattedTime: string,
+  config: Pick<ContextConfig, 'fetchByIdSupported'> = {}
 ): string[] {
   const summaryTitle = `${summary.request || 'Session started'} (${formattedTime})`;
   return [
-    `${colors.yellow}#S${summary.id}${colors.reset} ${summaryTitle}`,
+    `${colors.yellow}#S${formatContextReferenceId(summary.id, config)}${colors.reset} ${summaryTitle}`,
     ''
   ];
 }
