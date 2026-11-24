@@ -375,6 +375,13 @@ describe('AgentFormatter', () => {
 
       expect(joined).toContain('Session started');
     });
+
+    it('should shorten UUID session refs when fetch-by-id is unsupported', () => {
+      const summary = { id: '72121b37-6247-4144-9b80-dc51d93b46e2', request: 'Req' };
+
+      expect(renderAgentSummaryItem(summary, '10:00', { fetchByIdSupported: false })[0]).toMatch(/^S72121b37 Req/);
+      expect(renderAgentSummaryItem(summary, '10:00')[0]).toContain('S72121b37-6247-4144-9b80-dc51d93b46e2');
+    });
   });
 
   describe('renderAgentSummaryField', () => {

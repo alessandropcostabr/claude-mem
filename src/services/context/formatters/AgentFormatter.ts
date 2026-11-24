@@ -141,10 +141,11 @@ export function renderAgentFullObservation(
 
 export function renderAgentSummaryItem(
   summary: { id: ObservationId; request: string | null },
-  formattedTime: string
+  formattedTime: string,
+  config: Pick<ContextConfig, 'fetchByIdSupported'> = {}
 ): string[] {
   return [
-    `S${summary.id} ${summary.request || 'Session started'} (${formattedTime})`,
+    `S${formatContextReferenceId(summary.id, config)} ${summary.request || 'Session started'} (${formattedTime})`,
   ];
 }
 

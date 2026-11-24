@@ -54,7 +54,7 @@ function renderDayTimelineAgent(
     if (item.type === 'summary') {
       const summary = item.data as SummaryTimelineItem;
       const formattedTime = formatDateTime(summary.displayTime);
-      output.push(...Agent.renderAgentSummaryItem(summary, formattedTime));
+      output.push(...Agent.renderAgentSummaryItem(summary, formattedTime, config));
     } else {
       const obs = item.data as Observation;
       const time = formatTime(obs.created_at);
@@ -97,7 +97,7 @@ function renderDayTimelineHuman(
 
       const summary = item.data as SummaryTimelineItem;
       const formattedTime = formatDateTime(summary.displayTime);
-      output.push(...Human.renderHumanSummaryItem(summary, formattedTime));
+      output.push(...Human.renderHumanSummaryItem(summary, formattedTime, config));
     } else {
       const obs = item.data as Observation;
       const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
