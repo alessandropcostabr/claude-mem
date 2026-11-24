@@ -206,6 +206,24 @@ describe('ClaudeObservationProvider', () => {
     const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: fakeFetch.fetch });
     await expect(provider.generate(makeContext())).rejects.toBeInstanceOf(ServerClassifiedProviderError);
   });
+
+  it('sends Bearer + oauth beta for sk-ant-oat tokens and x-api-key otherwise', async () => {
+    const ok = () => jsonResponse(200, { content: [{ type: 'text', text: 'x' }], usage: {} });
+    const headersFor = async (apiKey: string) => {
+      const capturing = new CapturingFetch(ok());
+      await new ClaudeObservationProvider({ apiKey, fetchImpl: capturing.fetch }).generate(makeContext());
+      return capturing.lastInit?.headers as Record<string, string>;
+    };
+
+    const oauth = await headersFor('sk-ant-oat01-fake');
+    expect(oauth.Authorization).toBe('Bearer sk-ant-oat01-fake');
+    expect(oauth['anthropic-beta']).toBe('oauth-2025-04-20');
+    expect(oauth['x-api-key']).toBeUndefined();
+
+    const apiKey = await headersFor('sk-ant-api03-fake');
+    expect(apiKey['x-api-key']).toBe('sk-ant-api03-fake');
+    expect(apiKey.Authorization).toBeUndefined();
+  });
 });
 
 describe('GeminiObservationProvider', () => {
