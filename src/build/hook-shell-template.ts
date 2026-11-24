@@ -39,8 +39,6 @@ export interface ShellTemplateOptions {
   trailingCommand: string[];
   /** Extra env exports prepended to the trailing command (e.g. CLAUDE_MEM_CODEX_HOOK=1). */
   extraEnv?: Record<string, string>;
-  /** Optional trailing JSON echoed after the command (e.g. SessionStart continue marker). */
-  trailingJson?: object;
   /** stderr message when no candidate root resolves. */
   notFoundMessage: string;
   /**
@@ -180,11 +178,7 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
         .join('')
     : '';
 
-  let command = `${envPrefix}${options.trailingCommand.join(' ')}`;
-  if (options.trailingJson) {
-    command += `; echo '${JSON.stringify(options.trailingJson)}'`;
-  }
-  parts.push(command);
+  parts.push(`${envPrefix}${options.trailingCommand.join(' ')}`);
 
   return parts.join(' ');
 }
