@@ -9,6 +9,7 @@ import {
   newId,
   queryOne,
   toEpoch,
+  toJsonbParam,
   toJsonObject
 } from './utils.js';
 
@@ -95,8 +96,8 @@ export class PostgresAgentEventsRepository {
         idempotencyKey,
         input.eventType,
         input.platformSource ?? null,
-        JSON.stringify(input.payload ?? {}),
-        JSON.stringify(input.metadata ?? {}),
+        toJsonbParam(input.payload ?? {}),
+        toJsonbParam(input.metadata ?? {}),
         new Date(input.occurredAt)
       ]
     );
