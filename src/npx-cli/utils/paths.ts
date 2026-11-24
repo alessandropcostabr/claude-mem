@@ -121,7 +121,11 @@ export { readJsonSafe } from '../../utils/json-utils.js';
  * we don't accidentally widen permissions on user-owned configs like
  * ~/.claude/settings.json.
  */
-export function writeJsonFileAtomic(filepath: string, data: any): void {
+export function writeJsonFileAtomic(
+  filepath: string,
+  data: any,
+  options: { mode?: number } = {},
+): void {
   // POSIX rename(2) operates on the symlink itself, so an atomic rename over
   // a symlinked destination would replace the link rather than writing through
   // it. Resolve up front so temp + rename both live on the real target's fs.
@@ -152,11 +156,13 @@ export function writeJsonFileAtomic(filepath: string, data: any): void {
 
   // Preserve existing mode if the destination already exists; otherwise let
   // the OS apply the standard new-file default (0o666 minus umask via openSync).
-  let mode: number | undefined;
-  try {
-    mode = statSync(resolved).mode & 0o777;
-  } catch {
-    // File doesn't exist yet — fall through to default mode.
+  let mode = options.mode;
+  if (mode === undefined) {
+    try {
+      mode = statSync(resolved).mode & 0o777;
+    } catch {
+      // File doesn't exist yet — fall through to default mode.
+    }
   }
 
   let fd: number | undefined;

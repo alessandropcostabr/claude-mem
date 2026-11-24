@@ -119,6 +119,20 @@ describe('server beta postgres observation storage', () => {
     })).rejects.toThrow(/project_id must belong to team_id/);
   });
 
+  it('stores agent events whose payload carries NUL bytes from binary tool output', async () => {
+    const { project, session } = await createFixtureScope(storage);
+    const event = await storage.agentEvents.create({
+      projectId: project.id,
+      teamId: project.teamId,
+      serverSessionId: session.id,
+      sourceAdapter: 'claude-code',
+      eventType: 'tool_use',
+      payload: { tool_response: { stdout: '\x7fELF\u0002\u0000\u0000end' } },
+      occurredAt: new Date('2026-11-23T23:00:00.000Z')
+    });
+    expect((event.payload as { tool_response: { stdout: string } }).tool_response.stdout).toBe('\x7fELF\u0002end');
+  });
+
   it('deduplicates agent events with deterministic idempotency keys when source event IDs are omitted', async () => {
     const { project, session } = await createFixtureScope(storage);
     const occurredAt = new Date('2026-05-07T20:00:00.000Z');
@@ -443,6 +457,39 @@ describe('server beta postgres observation storage', () => {
       id: team.id,
       userId: 'outsider'
     })).resolves.toBeNull();
+  });
+
+  it('re-pins payload.generation_job_id to the surviving row on idempotent re-create', async () => {
+    const { project, event } = await createFixtureScopeWithEventJob(storage);
+
+    const first = await storage.observationGenerationJobs.create({
+      projectId: project.id,
+      teamId: project.teamId,
+      sourceType: 'agent_event',
+      sourceId: event.id,
+      agentEventId: event.id,
+      jobType: 'payload_id_drift',
+      payload: { generation_job_id: 'id-minted-for-the-first-insert' }
+    });
+
+    // The second create collides on idempotency_key. ON CONFLICT keeps the
+    // existing row, so the id minted for this attempt is discarded -- but the
+    // caller still put it in the payload it is handing over.
+    const second = await storage.observationGenerationJobs.create({
+      projectId: project.id,
+      teamId: project.teamId,
+      sourceType: 'agent_event',
+      sourceId: event.id,
+      agentEventId: event.id,
+      jobType: 'payload_id_drift',
+      payload: { generation_job_id: 'id-discarded-by-on-conflict' }
+    });
+
+    expect(second.id).toBe(first.id);
+    // The worker resolves the job through payload.generation_job_id. If the
+    // discarded id survived here, the row could never be locked and the job
+    // would be dropped silently while reporting success to the queue.
+    expect((second.payload as { generation_job_id?: string }).generation_job_id).toBe(first.id);
   });
 
   it('rejects illegal generation job lifecycle transitions and max-attempt retries', async () => {

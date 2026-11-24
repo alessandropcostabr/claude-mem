@@ -159,11 +159,14 @@ export function validateServerBetaEnv(
 // loaded". We mirror the worker's pattern (src/services/worker-service.ts) and
 // fail fast at boot if no mode can be loaded, so a broken install surfaces at
 // startup rather than as silent per-job failures.
-export function loadServerBetaMode(): void {
+type ServerBetaModeManager = Pick<ModeManager, 'loadMode' | 'getActiveMode'>;
+
+export function loadServerBetaMode(
+  modeManager: ServerBetaModeManager = ModeManager.getInstance(),
+): void {
   // ModeManager.loadMode('code') throws ('Critical: code.json mode file
   // missing') if the bundled mode is absent — that propagates as a fatal boot
   // error. We additionally assert a mode is active afterward.
-  const modeManager = ModeManager.getInstance();
   modeManager.loadMode('code');
   // getActiveMode() throws if nothing is loaded — this is the explicit
   // validation that boot did not silently no-op.

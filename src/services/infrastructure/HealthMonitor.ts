@@ -3,7 +3,7 @@ import path from 'path';
 import net from 'net';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { MARKETPLACE_ROOT } from '../../shared/paths.js';
+import { getPackageRoot, MARKETPLACE_ROOT } from '../../shared/paths.js';
 
 async function httpRequestToWorker(
   port: number,
@@ -91,9 +91,13 @@ export async function waitForPortFree(port: number, timeoutMs: number = 10000): 
   return false;
 }
 
-export async function httpShutdown(port: number): Promise<boolean> {
+export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 'stop'): Promise<boolean> {
   try {
-    const result = await httpRequestToWorker(port, '/api/admin/shutdown', 'POST');
+    // The CLI restart path stops the worker through this same endpoint; the
+    // reason tag lets the worker spawn its own successor (worker-shutdown.ts
+    // restart handoff) instead of staying kill-only.
+    const endpointPath = reason === 'restart' ? '/api/admin/shutdown?reason=restart' : '/api/admin/shutdown';
+    const result = await httpRequestToWorker(port, endpointPath, 'POST');
     if (!result.ok) {
       logger.warn('SYSTEM', 'Shutdown request returned error', { status: result.statusCode });
       return false;
@@ -109,22 +113,24 @@ export async function httpShutdown(port: number): Promise<boolean> {
   }
 }
 
-export function getInstalledPluginVersion(): string {
-  try {
-    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-    return packageJson.version;
-  } catch (error: unknown) {
-    if (error instanceof Error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT' || code === 'EBUSY') {
-        logger.debug('SYSTEM', 'Could not read plugin version (shutdown race)', { code });
-        return 'unknown';
+export function getInstalledPluginVersion(
+  hostPluginRoot = process.env.CLAUDE_PLUGIN_ROOT || process.env.PLUGIN_ROOT
+): string {
+  const roots = [hostPluginRoot, getPackageRoot(), MARKETPLACE_ROOT].filter(Boolean) as string[];
+  for (const root of new Set(roots)) {
+    try {
+      const packageJson = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf-8'));
+      return packageJson.version;
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'EBUSY') continue;
       }
       throw error;
     }
-    throw error;
   }
+  logger.debug('SYSTEM', 'Could not read plugin version (all plugin roots unavailable)');
+  return 'unknown';
 }
 
 export async function getRunningWorkerVersion(port: number): Promise<string | null> {

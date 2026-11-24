@@ -21,6 +21,7 @@ import {
   type ServerBetaRuntimeContext,
 } from '../../services/hooks/runtime-selector.js';
 import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
+import { clearTimelinePending } from '../../shared/codex-compaction-gate.js';
 
 function buildSystemMessage(displayContent: string, showTerminalOutput: boolean, port: number): string | undefined {
   return showTerminalOutput && displayContent
@@ -100,6 +101,10 @@ async function injectFromServerBeta(
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
+    if (input.platform === 'codex') {
+      clearTimelinePending(input.sessionId, input.agentId);
+    }
+
     const cwd = input.cwd ?? process.cwd();
     const context = getProjectContext(cwd);
     const port = getWorkerPort();

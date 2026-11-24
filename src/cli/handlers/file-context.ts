@@ -11,6 +11,7 @@ import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { HybridScorer } from '../../services/scoring/HybridScorer.js';
+import { selectRuntime } from '../../services/hooks/runtime-selector.js';
 
 const FILE_READ_GATE_MIN_BYTES = 1_500;
 
@@ -176,6 +177,15 @@ export const fileContextHandler: EventHandler = {
     const candidatePaths = filePaths.length > 0 ? filePaths : (filePath ? [filePath] : []);
 
     if (candidatePaths.length === 0) {
+      return { continue: true, suppressOutput: true };
+    }
+
+    // The timeline below is served by the LOCAL worker's SQLite (/api/observations/by-file).
+    // In server-beta runtime there is no local store (memory lives in the fleet PG), and
+    // asking for it makes executeWithWorkerFallback try to START a worker and, after N
+    // failures, BLOCK the Read (fail-loud, exit 2). Skip: no context, never touch the worker.
+    if (selectRuntime() === 'server-beta') {
+      logger.debug('HOOK', 'server-beta runtime: file context is served by the local worker only, skipping');
       return { continue: true, suppressOutput: true };
     }
 

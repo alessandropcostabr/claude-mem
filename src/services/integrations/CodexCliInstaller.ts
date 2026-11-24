@@ -378,11 +378,8 @@ export async function installCodexCli(marketplaceRootOverride?: string): Promise
     console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
     registerCodexMarketplace(marketplaceRoot);
     enableCodexPluginConfig();
-    runCodexBestEffort(
-      ['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME],
-      'Refreshed Codex marketplace and installed plugin cache.',
-      'Could not refresh Codex marketplace cache; reinstall or upgrade claude-mem from /plugins if Codex still uses old MCP config',
-    );
+    runCodex(['plugin', 'add', CODEX_PLUGIN_ID]);
+    console.log('  Installed Codex plugin cache from the local marketplace.');
     if (!cleanupLegacyCodexAgentsMdContext()) {
       console.warn(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
     }
@@ -398,7 +395,8 @@ Plugin source:     ${marketplaceRoot}
 
 Next steps:
   1. Open Codex CLI in your project
-  2. Restart any running Codex sessions so native hooks are loaded
+  2. Run /hooks and review and trust the claude-mem hooks
+  3. Restart any running Codex sessions so native hooks are loaded
 
 For a fresh setup, the supported entry point is:
   npx claude-mem@latest install

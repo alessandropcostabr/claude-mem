@@ -80,7 +80,9 @@ export interface AiStatus {
 export interface ServerOptions {
   getInitializationComplete: () => boolean;
   getMcpReady: () => boolean;
-  onShutdown: () => Promise<void>;
+  // reason is 'restart' when the CLI restart path tags /api/admin/shutdown
+  // with ?reason=restart (so the dying worker self-replaces), 'stop' otherwise.
+  onShutdown: (reason?: 'stop' | 'restart') => Promise<void>;
   onRestart: () => Promise<void>;
   workerPath: string;
   runtime?: string;
@@ -291,7 +293,11 @@ export class Server {
       }
     });
 
-    this.app.post('/api/admin/shutdown', requireLocalhost, async (_req: Request, res: Response) => {
+    this.app.post('/api/admin/shutdown', requireLocalhost, async (req: Request, res: Response) => {
+      // Only the exact 'restart' tag (set by the CLI restart path) upgrades the
+      // reason so the dying worker self-replaces; anything else stays 'stop'.
+      const shutdownReason: 'stop' | 'restart' = req.query.reason === 'restart' ? 'restart' : 'stop';
+
       const isWindowsManaged = process.platform === 'win32' &&
         process.env.CLAUDE_MEM_MANAGED === 'true' &&
         process.send;
@@ -299,9 +305,9 @@ export class Server {
       if (isWindowsManaged) {
         res.json({ status: 'shutting_down' });
         logger.info('SYSTEM', 'Sending shutdown request to wrapper');
-        process.send!({ type: 'shutdown' });
+        process.send!({ type: 'shutdown', reason: shutdownReason });
       } else {
-        flushResponseThen(res, { status: 'shutting_down' }, () => this.options.onShutdown());
+        flushResponseThen(res, { status: 'shutting_down' }, () => this.options.onShutdown(shutdownReason));
       }
     });
 

@@ -207,7 +207,23 @@ describe('Codex CLI Compatibility (#744)', () => {
         },
       }) as any;
 
-      expect(output).toEqual({ continue: true, suppressOutput: true });
+      expect(output).toEqual({ continue: true });
+    });
+
+    it('keeps Codex compaction source and bounded subagent identity', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const input = codexAdapter.normalizeInput({
+        hook_event_name: 'PostCompact',
+        session_id: 'codex-session',
+        source: 'compact',
+        cwd: '/tmp',
+        agent_id: 'agent-1',
+        agent_type: 'worker',
+      });
+
+      expect(input.sessionSource).toBe('compact');
+      expect(input.agentId).toBe('agent-1');
+      expect(input.agentType).toBe('worker');
     });
   });
 
@@ -398,18 +414,18 @@ describe('Hook Lifecycle - Claude Code Adapter', () => {
     expect(await fmt({ systemMessage: 0 })).toEqual({});
   });
 
-  it('should strip all non-contract fields', async () => {
+  it('should preserve Stop control fields and strip non-contract fields', async () => {
     expect(await fmt({
       continue: false,
       suppressOutput: false,
       systemMessage: 'msg',
       exitCode: 2,
       hookSpecificOutput: undefined,
-    })).toEqual({ systemMessage: 'msg' });
+    })).toEqual({ continue: false, systemMessage: 'msg' });
   });
 
   it('should only emit keys from the Claude Code hook contract', async () => {
-    const allowedKeys = new Set(['hookSpecificOutput', 'systemMessage', 'decision', 'reason']);
+    const allowedKeys = new Set(['hookSpecificOutput', 'systemMessage', 'continue', 'decision', 'reason']);
     const cases = [
       {},
       { systemMessage: 'x' },

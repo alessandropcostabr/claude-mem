@@ -2,8 +2,11 @@
 
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 
+let capturedTimeouts: number[] = [];
+
 mock.module('../../src/shared/worker-utils.js', () => ({
-  fetchWithTimeout: async (url: string, init: RequestInit, _timeoutMs: number) => {
+  fetchWithTimeout: async (url: string, init: RequestInit, timeoutMs: number) => {
+    capturedTimeouts.push(timeoutMs);
     return globalThis.fetch(url, init);
   },
 }));
@@ -47,6 +50,7 @@ function installFetch(handler: (req: CapturedRequest) => Response | Promise<Resp
 describe('ServerBetaClient', () => {
   beforeEach(() => {
     captured = [];
+    capturedTimeouts = [];
   });
 
   afterEach(() => {
@@ -98,6 +102,8 @@ describe('ServerBetaClient', () => {
     const result = await client.recordEvent({
       projectId: 'p1',
       contentSessionId: 'cs1',
+      sourceEventId: 'tool-use-1',
+      platformSource: 'codex',
       sourceType: 'hook',
       eventType: 'tool_use',
       occurredAtEpoch: 1234,
@@ -106,8 +112,30 @@ describe('ServerBetaClient', () => {
     expect(captured[0]?.url).toBe('http://localhost:9999/v1/events');
     expect((captured[0]?.body as Record<string, unknown>).eventType).toBe('tool_use');
     expect((captured[0]?.body as Record<string, unknown>).sourceType).toBe('hook');
+    expect((captured[0]?.body as Record<string, unknown>).sourceEventId).toBe('tool-use-1');
+    expect((captured[0]?.body as Record<string, unknown>).platformSource).toBe('codex');
     expect((captured[0]?.body as Record<string, unknown>).occurredAtEpoch).toBe(1234);
     expect(result.event.id).toBe('e1');
+  });
+
+  it('recordEvent forwards a per-request timeout override', async () => {
+    installFetch(async () => new Response(JSON.stringify({
+      event: { id: 'e-timeout', projectId: 'p1', serverSessionId: null },
+    }), { status: 201 }));
+    const client = new ServerBetaClient({
+      serverBaseUrl: 'http://localhost:9999',
+      apiKey: 'cmem_test',
+      timeoutMs: 30_000,
+    });
+
+    await client.recordEvent({
+      projectId: 'p1',
+      sourceType: 'hook',
+      eventType: 'tool_use',
+      occurredAtEpoch: 1,
+    }, { timeoutMs: 2_000 });
+
+    expect(capturedTimeouts).toEqual([2_000]);
   });
 
   it('endSession sends POST /v1/sessions/:id/end', async () => {
@@ -186,6 +214,22 @@ describe('ServerBetaClient', () => {
     }
   });
 
+  it.each([408, 425])('classifies transient HTTP %s as fallback-eligible', async (status) => {
+    installFetch(async () => new Response('retry later', { status }));
+    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    let caught: unknown;
+    try {
+      await client.recordEvent({ projectId: 'p1', sourceType: 'hook', eventType: 'tool_use', occurredAtEpoch: 1 });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ServerBetaClientError);
+    if (caught instanceof ServerBetaClientError) {
+      expect(caught.status).toBe(status);
+      expect(caught.isFallbackEligible()).toBe(true);
+    }
+  });
+
   it('strips trailing slash from baseUrl', async () => {
     installFetch(async () => new Response(JSON.stringify({ session: { id: 's' } }), { status: 200 }));
     const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999///', apiKey: 'cmem_test' });
@@ -210,15 +254,12 @@ describe('ServerBetaClient', () => {
     });
     expect(captured[0]?.url).toBe('http://localhost:9999/v1/memories');
     expect(captured[0]?.method).toBe('POST');
-    // Write-path contract (#2684): content maps onto narrative (the FTS-indexed
-    // / trigger-precondition column) and type defaults from kind, so the row is
-    // never empty. The old payload shipped a `content` field that no column
-    // accepted, producing a frozen/empty observation.
+    // The live server-beta contract accepts `content` directly.
     const body = captured[0]?.body as Record<string, unknown>;
-    expect(body.narrative).toBe('hello');
+    expect(body.content).toBe('hello');
     expect(body.kind).toBe('manual');
-    expect(body.type).toBe('manual');
-    expect(body.content).toBeUndefined();
+    expect(body.narrative).toBeUndefined();
+    expect(body.type).toBeUndefined();
     expect(result.memory.id).toBe('o1');
   });
 
@@ -279,13 +320,9 @@ describe('ServerBetaClient', () => {
 
   it('payload builders omit absent fields', () => {
     const client = new ServerBetaClient({ serverBaseUrl: 'http://x', apiKey: 'k' });
-    // content → narrative, type defaults from kind (default 'manual') so a
-    // minimal observation_add still persists a searchable row (#2684).
     expect(client.buildAddObservationPayload({ projectId: 'p', content: 'c' })).toEqual({
       projectId: 'p',
-      kind: 'manual',
-      type: 'manual',
-      narrative: 'c',
+      content: 'c',
     });
     expect(client.buildSearchPayload({ projectId: 'p', query: 'q' })).toEqual({
       projectId: 'p',
@@ -295,6 +332,26 @@ describe('ServerBetaClient', () => {
       projectId: 'p',
       query: 'q',
       limit: 7,
+    });
+  });
+
+  it('strips private tags recursively before sending a server-beta request', async () => {
+    installFetch(async () => new Response(
+      JSON.stringify({ event: { id: 'e1' } }),
+      { status: 201 },
+    ));
+    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    await client.recordEvent({
+      projectId: 'p1',
+      sourceType: 'hook',
+      eventType: 'UserPromptSubmit',
+      payload: { prompt: 'public <private>secret</private>', nested: ['<private >hidden</private >'] },
+    });
+    expect(captured[0]?.body).toEqual({
+      projectId: 'p1',
+      sourceType: 'hook',
+      eventType: 'UserPromptSubmit',
+      payload: { prompt: 'public', nested: [''] },
     });
   });
 });

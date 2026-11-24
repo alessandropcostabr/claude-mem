@@ -15,14 +15,18 @@ import { OpenRouterObservationProvider } from '../../../src/server/generation/pr
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
 
-function makeContext(overrides: Partial<{ payload: unknown; serverSessionId: string | null }> = {}): ServerGenerationContext {
+function makeContext(overrides: Partial<{
+  payload: unknown;
+  serverSessionId: string | null;
+  sourceType: 'agent_event' | 'session_summary';
+}> = {}): ServerGenerationContext {
   return {
     job: {
       id: 'job-1',
       projectId: 'proj-1',
       teamId: 'team-1',
       agentEventId: 'evt-1',
-      sourceType: 'agent_event',
+      sourceType: overrides.sourceType ?? 'agent_event',
       sourceId: 'evt-1',
       serverSessionId: overrides.serverSessionId ?? null,
       jobType: 'observation_generate_for_event',
@@ -106,6 +110,17 @@ describe('shared error classification', () => {
 });
 
 describe('buildServerGenerationPrompt', () => {
+  it('asks summary jobs for summary XML and event jobs for observation XML', () => {
+    const summary = buildServerGenerationPrompt(makeContext({ sourceType: 'session_summary' }));
+    expect(summary.prompt).toContain('<summary>...</summary>');
+    expect(summary.prompt).toContain('<next_steps>');
+    expect(summary.prompt).not.toContain('<observation>...</observation>');
+
+    const event = buildServerGenerationPrompt(makeContext());
+    expect(event.prompt).toContain('<observation>...</observation>');
+    expect(event.prompt).not.toContain('<summary>...</summary>');
+  });
+
   it('strips <private> tags from event payload before sending', () => {
     const context = makeContext({
       payload: '<private>secret</private>visible',
@@ -190,6 +205,24 @@ describe('ClaudeObservationProvider', () => {
     const fakeFetch = new FakeFetch(jsonResponse(401, { error: { message: 'Invalid API key' } }));
     const provider = new ClaudeObservationProvider({ apiKey: 'sk-fake', fetchImpl: fakeFetch.fetch });
     await expect(provider.generate(makeContext())).rejects.toBeInstanceOf(ServerClassifiedProviderError);
+  });
+
+  it('sends Bearer + oauth beta for sk-ant-oat tokens and x-api-key otherwise', async () => {
+    const ok = () => jsonResponse(200, { content: [{ type: 'text', text: 'x' }], usage: {} });
+    const headersFor = async (apiKey: string) => {
+      const capturing = new CapturingFetch(ok());
+      await new ClaudeObservationProvider({ apiKey, fetchImpl: capturing.fetch }).generate(makeContext());
+      return capturing.lastInit?.headers as Record<string, string>;
+    };
+
+    const oauth = await headersFor('sk-ant-oat01-fake');
+    expect(oauth.Authorization).toBe('Bearer sk-ant-oat01-fake');
+    expect(oauth['anthropic-beta']).toBe('oauth-2025-04-20');
+    expect(oauth['x-api-key']).toBeUndefined();
+
+    const apiKey = await headersFor('sk-ant-api03-fake');
+    expect(apiKey['x-api-key']).toBe('sk-ant-api03-fake');
+    expect(apiKey.Authorization).toBeUndefined();
   });
 });
 

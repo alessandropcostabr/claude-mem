@@ -4,11 +4,18 @@ import { z } from 'zod';
 
 export const AgentEventSourceTypeSchema = z.enum(['hook', 'worker', 'provider', 'server', 'api']);
 
+// Largest epoch a JS Date can hold; past it the insert fails with a 500 the
+// hook spool would replay for its whole retry window.
+const MAX_DATE_EPOCH_MS = 8_640_000_000_000_000;
+
 export const AgentEventSchema = z.object({
   id: z.string().min(1),
   projectId: z.string().min(1),
   serverSessionId: z.string().min(1).nullable().default(null),
   sourceType: AgentEventSourceTypeSchema,
+  // Stable adapter-provided identity. Postgres uses it to make retries of a
+  // timed-out hook event idempotent instead of creating a second agent_event.
+  sourceEventId: z.string().min(1).nullable().default(null),
   eventType: z.string().min(1),
   // #2560 — which platform produced the event (claude-code, opencode, cursor,
   // ...). Persisted on the Postgres agent_events row for plan-09 scoping; the
@@ -18,8 +25,8 @@ export const AgentEventSchema = z.object({
   payload: z.unknown().default({}),
   contentSessionId: z.string().min(1).nullable().default(null),
   memorySessionId: z.string().min(1).nullable().default(null),
-  occurredAtEpoch: z.number().int().nonnegative(),
-  createdAtEpoch: z.number().int().nonnegative()
+  occurredAtEpoch: z.number().int().nonnegative().max(MAX_DATE_EPOCH_MS),
+  createdAtEpoch: z.number().int().nonnegative().max(MAX_DATE_EPOCH_MS)
 });
 
 export const CreateAgentEventSchema = AgentEventSchema.omit({
@@ -27,6 +34,7 @@ export const CreateAgentEventSchema = AgentEventSchema.omit({
   createdAtEpoch: true
 }).partial({
   serverSessionId: true,
+  sourceEventId: true,
   platformSource: true,
   payload: true,
   contentSessionId: true,

@@ -39,4 +39,15 @@ describe('agent-event platformSource threading (#2560)', () => {
     });
     expect(parsed.platformSource).toBe('claude-code');
   });
+
+  it('preserves sourceEventId so hook spool replays stay idempotent', () => {
+    const parsed = CreateAgentEventSchema.parse({
+      projectId: 'proj-1',
+      sourceType: 'hook',
+      sourceEventId: 'tool-use-1',
+      eventType: 'tool_use',
+      occurredAtEpoch: 1,
+    });
+    expect(parsed.sourceEventId).toBe('tool-use-1');
+  });
 });

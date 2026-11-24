@@ -10,16 +10,19 @@ import { stripMemoryTagsFromPrompt } from '../../utils/tag-stripping.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
-import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
+import { resolveRuntimeContext, logServerBetaFallback, type SelectedRuntime } from '../../services/hooks/runtime-selector.js';
 import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
 import {
   getSelfAuthorConfig,
   getSubstantiveCount,
   decideSelfAuthor,
   resetSubstantiveCount,
-  SELF_AUTHOR_PROMPT,
+  buildSelfAuthorPrompt,
+  consumeCheckpointRiderBaseline,
+  acknowledgeSubstantiveBaseline,
 } from '../../shared/self-author.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
+import type { SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 
 /**
  * After the (still-parallel) generation path runs, decide whether to block the
@@ -28,7 +31,49 @@ import { loadFromFileOnce } from '../../shared/hook-settings.js';
  * (clean stop). Guarded by stopHookActive so the self-authoring turn itself
  * stops cleanly.
  */
-function maybeSelfAuthor(input: NormalizedHookInput, fallthrough: HookResult): HookResult {
+export function shouldSuppressStopSelfAuthor(
+  realtimeEnabled: boolean,
+  runtime: SelectedRuntime,
+  riderEmitted: boolean,
+): boolean {
+  return realtimeEnabled && runtime === 'server-beta' && riderEmitted;
+}
+
+/**
+ * Every Stop closes the current rider interval, even when later guards skip
+ * summarization or configuration changed after UserPromptSubmit. Runtime and
+ * realtime settings decide only whether the consumed evidence suppresses the
+ * fallback; they never decide whether stale evidence survives this Stop.
+ */
+export function consumeCheckpointRiderAtStopEntry(
+  sessionId: string,
+  settings: SettingsDefaults,
+): boolean {
+  const cfg = getSelfAuthorConfig({
+    CLAUDE_MEM_SELF_AUTHOR_ENABLED: settings.CLAUDE_MEM_SELF_AUTHOR_ENABLED,
+    CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: settings.CLAUDE_MEM_SELF_AUTHOR_THRESHOLD,
+    CLAUDE_MEM_DATA_DIR: settings.CLAUDE_MEM_DATA_DIR,
+  });
+  try {
+    const baseline = consumeCheckpointRiderBaseline(sessionId, cfg.stateDir);
+    if (baseline === null) return false;
+    // Confirm only the activity covered when the rider was emitted. Events
+    // appended during the response remain pending for the next interval.
+    return acknowledgeSubstantiveBaseline(sessionId, cfg.stateDir, baseline);
+  } catch (error: unknown) {
+    logger.warn('HOOK', 'Self-authoring: could not consume checkpoint rider marker', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
+function maybeSelfAuthor(
+  input: NormalizedHookInput,
+  fallthrough: HookResult,
+  runtime: SelectedRuntime,
+  riderEmitted: boolean,
+): HookResult {
   try {
     const s = loadFromFileOnce();
     const cfg = getSelfAuthorConfig({
@@ -36,13 +81,23 @@ function maybeSelfAuthor(input: NormalizedHookInput, fallthrough: HookResult): H
       CLAUDE_MEM_SELF_AUTHOR_THRESHOLD: s.CLAUDE_MEM_SELF_AUTHOR_THRESHOLD,
       CLAUDE_MEM_DATA_DIR: s.CLAUDE_MEM_DATA_DIR,
     });
-    if (!cfg.enabled || !input.sessionId) return fallthrough;
+    if (!input.sessionId) return fallthrough;
+    const realtimeEnabled = s.CLAUDE_MEM_SELF_AUTHOR_REALTIME === 'true';
+    if (!cfg.enabled) return fallthrough;
     const count = getSubstantiveCount(input.sessionId, cfg.stateDir);
     const decision = decideSelfAuthor({
       enabled: cfg.enabled,
       stopHookActive: input.stopHookActive === true,
       substantiveCount: count,
       threshold: cfg.threshold,
+      // When the Checkpoint Rider is on (this host = C-prime), the rider already
+      // self-authors mid-session, so the Stop stays transparent (no blocking,
+      // no "Stop hook error"). The tail is still captured by the pipeline.
+      realtimeEnabled: shouldSuppressStopSelfAuthor(
+        realtimeEnabled,
+        runtime,
+        riderEmitted,
+      ),
     });
     if (!decision.block) return fallthrough;
     // Optimistic reset: we zero the counter before the block is honored. If the
@@ -54,7 +109,7 @@ function maybeSelfAuthor(input: NormalizedHookInput, fallthrough: HookResult): H
       substantiveCount: count,
       threshold: cfg.threshold,
     });
-    return { continue: true, decision: 'block', reason: SELF_AUTHOR_PROMPT };
+    return { continue: true, decision: 'block', reason: buildSelfAuthorPrompt(input.sessionId) };
   } catch (err) {
     logger.debug('HOOK', 'self-author decision failed (non-fatal)', {
       error: err instanceof Error ? err.message : String(err),
@@ -65,9 +120,16 @@ function maybeSelfAuthor(input: NormalizedHookInput, fallthrough: HookResult): H
 
 export const summarizeHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
+    const settings = loadFromFileOnce();
+    const riderEmitted = input.sessionId
+      ? consumeCheckpointRiderAtStopEntry(input.sessionId, settings)
+      : false;
+
     if (input.cwd && !shouldTrackProject(input.cwd)) {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
+
+    const runtime = resolveRuntimeContext();
 
     if (input.stopHookActive === true) {
       logger.debug('HOOK', 'Skipping summary: Codex Stop hook re-entry detected', {
@@ -125,7 +187,6 @@ export const summarizeHandler: EventHandler = {
 
     const platformSource = normalizePlatformSource(input.platform);
 
-    const runtime = resolveRuntimeContext();
     if (runtime.runtime === 'server-beta') {
       try {
         // Resolve the server_session_id idempotently. /v1/sessions/start is
@@ -154,7 +215,7 @@ export const summarizeHandler: EventHandler = {
         });
         await runtime.client.endSession({ sessionId: serverSessionId });
         logger.debug('HOOK', 'Summary request queued via server-beta');
-        return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS });
+        return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS }, runtime.runtime, riderEmitted);
       } catch (error: unknown) {
         if (isServerBetaClientError(error) && error.isFallbackEligible()) {
           logServerBetaFallback(error.kind, {
@@ -170,7 +231,7 @@ export const summarizeHandler: EventHandler = {
           // Self-authoring is independent of the generation path — run it even
           // when server-beta generation fails (that's the whole point: memory
           // shouldn't depend on the LLM generation pipeline succeeding).
-          return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS });
+          return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS }, runtime.runtime, riderEmitted);
         }
       }
     }
@@ -185,10 +246,10 @@ export const summarizeHandler: EventHandler = {
       },
     );
     if (isWorkerFallback(queueResult)) {
-      return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS });
+      return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS }, runtime.runtime, riderEmitted);
     }
 
     logger.debug('HOOK', 'Summary request queued, exiting hook');
-    return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS });
+    return maybeSelfAuthor(input, { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS }, runtime.runtime, riderEmitted);
   },
 };

@@ -10,7 +10,7 @@ function runVersionCheck(root: string) {
   const env = { ...process.env, CLAUDE_PLUGIN_ROOT: root };
   delete env.CLAUDE_MEM_CODEX_HOOK;
 
-  return spawnSync('node', [VERSION_CHECK_SCRIPT], {
+  return spawnSync(process.execPath, [VERSION_CHECK_SCRIPT], {
     encoding: 'utf-8',
     env,
   });

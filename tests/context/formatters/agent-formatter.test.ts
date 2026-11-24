@@ -273,6 +273,16 @@ describe('AgentFormatter', () => {
       expect(result).toBe('5 10:00a I Test Observation');
     });
 
+    it('should shorten server-beta UUID refs when by-id fetch is unsupported', () => {
+      const obs = createTestObservation({ id: '3c4b2513-5048-45fa-95e0-e3222ae99671' });
+      const config = createTestConfig({ fetchByIdSupported: false });
+
+      const result = renderAgentTableRow(obs, '10:00 AM', config);
+
+      expect(result).toBe('3c4b2513 10:00a I Test Observation');
+      expect(result).not.toContain('5048-45fa');
+    });
+
     it('should use quote mark for repeated time', () => {
       const obs = createTestObservation();
       const config = createTestConfig();
@@ -293,6 +303,17 @@ describe('AgentFormatter', () => {
 
       expect(joined).toContain('**7**');
       expect(joined).toContain('**Full Observation**');
+    });
+
+    it('should shorten server-beta UUID refs in full observations', () => {
+      const obs = createTestObservation({ id: '3c4b2513-5048-45fa-95e0-e3222ae99671' });
+      const config = createTestConfig({ fetchByIdSupported: false });
+
+      const result = renderAgentFullObservation(obs, '10:00 AM', 'Detail content', config);
+      const joined = result.join('\n');
+
+      expect(joined).toContain('**3c4b2513**');
+      expect(joined).not.toContain('5048-45fa');
     });
 
     it('should include detail field when provided', () => {
@@ -353,6 +374,13 @@ describe('AgentFormatter', () => {
       const joined = result.join('\n');
 
       expect(joined).toContain('Session started');
+    });
+
+    it('should shorten UUID session refs when fetch-by-id is unsupported', () => {
+      const summary = { id: '72121b37-6247-4144-9b80-dc51d93b46e2', request: 'Req' };
+
+      expect(renderAgentSummaryItem(summary, '10:00', { fetchByIdSupported: false })[0]).toMatch(/^S72121b37 Req/);
+      expect(renderAgentSummaryItem(summary, '10:00')[0]).toContain('S72121b37-6247-4144-9b80-dc51d93b46e2');
     });
   });
 

@@ -9,6 +9,7 @@ import type {
 import { colors } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
+import { formatContextReferenceId } from './id-display.js';
 
 function formatHeaderDateTime(): string {
   const now = new Date();
@@ -118,7 +119,8 @@ export function renderHumanTableRow(
   const readPart = (config.showReadTokens && readTokens > 0) ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
   const discoveryPart = (config.showWorkTokens && discoveryTokens > 0) ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
 
-  return `  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`;
+  const refId = formatContextReferenceId(obs.id, config);
+  return `  ${colors.dim}#${refId}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`;
 }
 
 export function renderHumanFullObservation(
@@ -137,7 +139,8 @@ export function renderHumanFullObservation(
   const readPart = (config.showReadTokens && readTokens > 0) ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
   const discoveryPart = (config.showWorkTokens && discoveryTokens > 0) ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
 
-  output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${colors.bright}${title}${colors.reset}`);
+  const refId = formatContextReferenceId(obs.id, config);
+  output.push(`  ${colors.dim}#${refId}${colors.reset}  ${timePart}  ${icon}  ${colors.bright}${title}${colors.reset}`);
   if (detailField) {
     output.push(`    ${colors.dim}${detailField}${colors.reset}`);
   }
@@ -151,11 +154,12 @@ export function renderHumanFullObservation(
 
 export function renderHumanSummaryItem(
   summary: { id: ObservationId; request: string | null },
-  formattedTime: string
+  formattedTime: string,
+  config: Pick<ContextConfig, 'fetchByIdSupported'> = {}
 ): string[] {
   const summaryTitle = `${summary.request || 'Session started'} (${formattedTime})`;
   return [
-    `${colors.yellow}#S${summary.id}${colors.reset} ${summaryTitle}`,
+    `${colors.yellow}#S${formatContextReferenceId(summary.id, config)}${colors.reset} ${summaryTitle}`,
     ''
   ];
 }

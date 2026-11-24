@@ -6,6 +6,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
 import { resolveRuntimeContext } from '../../../hooks/runtime-selector.js';
+import { buildServerBetaObservationRequest } from '../../../../shared/server-beta-save-observation.js';
 
 const saveMemorySchema = z.object({
   text: z.string().trim().min(1),
@@ -30,6 +31,7 @@ const saveObservationSchema = z.object({
   files_modified: z.union([z.array(z.string()), z.string()]).optional(),
   project: z.string().optional(),
   generated_by_model: z.string().optional(),
+  checkpoint_key: z.string().optional(),
 }).refine(data => !!(data.narrative || data.text), {
   message: 'narrative (or text) is required and must be non-empty',
 });
@@ -254,25 +256,13 @@ export class MemoryRoutes extends BaseRouteHandler {
     // fleet PG (.253). See feedback_observation-add-content-undefined / project_self_author.
     const runtime = resolveRuntimeContext();
     if (runtime.runtime === 'server-beta') {
-      const computedTitle = title
-        || narrativeText.substring(0, 60).trim() + (narrativeText.length > 60 ? '...' : '');
-      const metadata: Record<string, unknown> = {
-        type,
-        title: computedTitle,
-        ...(subtitle ? { subtitle } : {}),
-        facts: MemoryRoutes.coerceStringArray(facts),
-        concepts: MemoryRoutes.coerceStringArray(concepts),
-        files_read: MemoryRoutes.coerceStringArray(files_read),
-        files_modified: MemoryRoutes.coerceStringArray(files_modified),
-        ...(generated_by_model ? { generated_by_model } : {}),
-      };
+      // Mapping (kind, metadata, regime tags, content_session_id) lives in one shared
+      // builder so this worker path and the MCP direct path (mcp-server.ts, used when
+      // no local worker is running) stay byte-identical.
+      const built = buildServerBetaObservationRequest(req.body, runtime.projectId);
+      const computedTitle = built.title;
       try {
-        const resp = await runtime.client.addObservation({
-          projectId: runtime.projectId,
-          content: narrativeText,
-          kind: type,
-          metadata,
-        });
+        const resp = await runtime.client.addObservation(built.request);
         logger.info('HTTP', 'Structured observation saved via server-beta', {
           id: resp.memory.id,
           type,
